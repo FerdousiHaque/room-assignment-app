@@ -76,6 +76,7 @@ jobs:
             --non-interactive > /tmp/firestore-deploy.log 2>&1
           status=$?
           cat /tmp/firestore-deploy.log
+          echo "::error::TEST ANNOTATION MARKER (debugging annotation delivery)"
           if [ $status -ne 0 ]; then
             python3 scripts/report-firestore-failure.py
           fi
