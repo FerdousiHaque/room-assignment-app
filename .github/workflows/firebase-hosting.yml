@@ -48,3 +48,21 @@ jobs:
           firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
           projectId: room-assingment
           channelId: live
+
+      # The hosting-deploy action above only ever touches Hosting — it never
+      # touches Firestore. Without this step, firestore.rules sitting in the
+      # repo does nothing: the live project keeps whatever rules were last
+      # deployed by hand (or Firebase's original locked-down default),
+      # which is why saves from the app can fail with "Missing or
+      # insufficient permissions" even though firestore.rules looks right
+      # in the repo.
+      - name: Deploy Firestore rules (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "$FIREBASE_SERVICE_ACCOUNT" > /tmp/firebase-service-account.json
+          npx firebase-tools deploy --only firestore:rules \
+            --project room-assingment \
+            --non-interactive
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/firebase-service-account.json
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
