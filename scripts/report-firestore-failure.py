@@ -16,6 +16,13 @@ log_file = os.environ.get("LOG_FILE", "/tmp/firestore-deploy.log")
 with open(log_file) as f:
     log = f.read()[-5000:]
 
+# Emit as a workflow error annotation first. Annotations need no extra
+# GITHUB_TOKEN permission (unlike the commit-comment POST below, which
+# some repos' default token permissions block outright) and are readable
+# via GET /repos/{owner}/{repo}/check-runs/{id}/annotations.
+escaped = log[-3000:].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+print(f"::error::Firestore rules deploy failed:%0A{escaped}")
+
 body = "### Firestore rules deploy failed\n```\n" + log + "\n```"
 
 req = urllib.request.Request(
@@ -32,8 +39,7 @@ try:
     with urllib.request.urlopen(req) as resp:
         print("Posted commit comment:", resp.status)
 except urllib.error.HTTPError as e:
-    # Printed to the step's own log (which may not always be readable) AND
-    # re-raised so the step itself shows red instead of a silently-dropped
-    # comment looking like nothing happened.
-    print("Failed to post commit comment:", e.code, e.read().decode(errors="replace"))
-    raise
+    # Non-fatal: the ::error:: annotation above is the primary reporting
+    # path since it needs no extra token permission. This is a bonus if
+    # the repo's default GITHUB_TOKEN happens to allow it.
+    print("Failed to post commit comment (non-fatal):", e.code, e.read().decode(errors="replace"))
