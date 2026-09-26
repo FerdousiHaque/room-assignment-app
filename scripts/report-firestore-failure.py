@@ -28,5 +28,12 @@ req = urllib.request.Request(
     },
     method="POST",
 )
-with urllib.request.urlopen(req) as resp:
-    print("Posted commit comment:", resp.status)
+try:
+    with urllib.request.urlopen(req) as resp:
+        print("Posted commit comment:", resp.status)
+except urllib.error.HTTPError as e:
+    # Printed to the step's own log (which may not always be readable) AND
+    # re-raised so the step itself shows red instead of a silently-dropped
+    # comment looking like nothing happened.
+    print("Failed to post commit comment:", e.code, e.read().decode(errors="replace"))
+    raise

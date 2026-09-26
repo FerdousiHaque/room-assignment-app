@@ -19,6 +19,12 @@ on:
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
+    # Needed for the failure-reporting step (scripts/report-firestore-failure.py)
+    # to post a commit comment with GITHUB_TOKEN — many repos default that
+    # token to read-only, which silently drops the comment (403) instead of
+    # failing loudly.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
