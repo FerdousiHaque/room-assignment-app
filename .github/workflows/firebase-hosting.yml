@@ -57,10 +57,10 @@ jobs:
       # insufficient permissions" even though firestore.rules looks right
       # in the repo.
       # If this fails, the full firebase-tools output is posted as a commit
-      # comment on the triggering commit (see the python block below) —
-      # Action *logs* are stored in Azure Blob Storage which isn't reachable
-      # from every environment that might need to read them, but a commit
-      # comment is a normal GitHub API read.
+      # comment on the triggering commit (scripts/report-firestore-failure.py)
+      # — Action *logs* are stored in Azure Blob Storage which isn't
+      # reachable from every environment that might need to read them, but
+      # a commit comment is a normal GitHub API read.
       - name: Deploy Firestore rules (main)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
@@ -71,25 +71,7 @@ jobs:
           status=$?
           cat /tmp/firestore-deploy.log
           if [ $status -ne 0 ]; then
-            python3 - <<'PYEOF'
-import json, os, urllib.request
-
-with open('/tmp/firestore-deploy.log') as f:
-    log = f.read()[-5000:]
-
-body = "### Firestore rules deploy failed\n```\n" + log + "\n```"
-req = urllib.request.Request(
-    f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/commits/{os.environ['GITHUB_SHA']}/comments",
-    data=json.dumps({'body': body}).encode(),
-    headers={
-        'Authorization': f"Bearer {os.environ['GH_TOKEN']}",
-        'Accept': 'application/vnd.github+json',
-        'Content-Type': 'application/json',
-    },
-    method='POST',
-)
-urllib.request.urlopen(req)
-PYEOF
+            python3 scripts/report-firestore-failure.py
           fi
           exit $status
         env:
@@ -98,3 +80,4 @@ PYEOF
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_SHA: ${{ github.sha }}
+          LOG_FILE: /tmp/firestore-deploy.log
