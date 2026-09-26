@@ -1,0 +1,50 @@
+name: Deploy to Firebase Hosting
+
+# Runs on every push to main: builds the app and deploys it to Firebase
+# Hosting, so the live site always reflects what's on main. Pull requests
+# get their own temporary preview URL instead of touching the live site.
+#
+# One-time setup this workflow needs (see README.md "Deploying" section
+# for the exact steps): a repo secret named FIREBASE_SERVICE_ACCOUNT
+# containing a Firebase/GCP service account JSON key with Hosting deploy
+# permission for the room-assingment project. Without that secret, this
+# workflow will run but fail at the deploy step.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy preview (pull requests)
+        if: github.event_name == 'pull_request'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          projectId: room-assingment
+
+      - name: Deploy to live site (main)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: '${{ secrets.GITHUB_TOKEN }}'
+          firebaseServiceAccount: '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}'
+          projectId: room-assingment
+          channelId: live

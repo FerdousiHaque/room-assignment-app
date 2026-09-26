@@ -1,0 +1,26 @@
+rules_version = '2';
+
+// This app currently has no sign-in step (see README) — it's meant to be
+// used by department staff who have the link, not the public internet.
+// Firestore rules can't check "is this person on our team" without an
+// auth system in front of them, so for now this scopes access to the
+// one collection the app actually uses (`appState`) and blocks
+// everything else in the project outright. This is NOT equivalent to
+// real per-user access control — anyone with the app's URL (and
+// therefore its Firebase config, which is always public in a web app)
+// can read and write `appState`.
+//
+// To lock this down for real: add Firebase Authentication (e.g. Google
+// sign-in restricted to your clinic's email domain) and change the
+// `allow read, write` line below to `allow read, write: if request.auth != null
+//   && request.auth.token.email.matches('.*@yourdomain[.]org$');`
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /appState/{docId} {
+      allow read, write: if true;
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
