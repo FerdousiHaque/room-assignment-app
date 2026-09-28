@@ -399,6 +399,26 @@ body {
   padding: 8px 10px;
 }
 
+.provider-table th.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+
+.provider-table th.sortable-th:hover {
+  color: var(--ink);
+}
+
+.sort-icon {
+  display: inline-block;
+  margin-left: 5px;
+  font-size: 10px;
+  color: var(--ink-soft);
+}
+
+.sort-icon.active {
+  color: var(--accent);
+}
+
 .provider-table td {
   padding: 9px 10px;
   border-bottom: 1px solid var(--line);

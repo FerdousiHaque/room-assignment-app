@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog.jsx';
 
 const emptyDraft = {
@@ -26,6 +26,10 @@ export default function RoomManager({ rooms, desks, onChange }) {
   // Id of the room awaiting delete confirmation, or null when the confirm
   // popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  // Room-code sort, toggled by clicking the "Room code" header: null (the
+  // default desk/hall/row grouping below) -> 'asc' -> 'desc' -> back to null.
+  const [codeSort, setCodeSort] = useState(null);
+  const toggleCodeSort = () => setCodeSort((prev) => (prev === null ? 'asc' : prev === 'asc' ? 'desc' : null));
 
   const resetDraft = () => {
     setDraft(emptyDraft);
@@ -117,6 +121,20 @@ export default function RoomManager({ rooms, desks, onChange }) {
     return r.videoCapable ? 'Video capable' : '—';
   };
 
+  const sortedRooms = useMemo(() => {
+    const list = [...rooms];
+    if (codeSort) {
+      list.sort((a, b) => {
+        // numeric:true so "9E" sorts before "10E" instead of after it.
+        const cmp = (a.code || '').localeCompare(b.code || '', undefined, { numeric: true, sensitivity: 'base' });
+        return codeSort === 'asc' ? cmp : -cmp;
+      });
+    } else {
+      list.sort((a, b) => a.deskId.localeCompare(b.deskId) || (a.hall || '').localeCompare(b.hall || '') || (a.row || 0) - (b.row || 0));
+    }
+    return list;
+  }, [rooms, codeSort]);
+
   return (
     <section className="provider-manager">
       <h2>Rooms</h2>
@@ -127,7 +145,19 @@ export default function RoomManager({ rooms, desks, onChange }) {
       <table className="provider-table">
         <thead>
           <tr>
-            <th>Room code</th>
+            <th
+              className="sortable-th"
+              onClick={toggleCodeSort}
+              title="Sort by room code"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCodeSort(); } }}
+            >
+              Room code
+              <span className={`sort-icon ${codeSort ? 'active' : ''}`}>
+                {codeSort === 'asc' ? '▲' : codeSort === 'desc' ? '▼' : '⇅'}
+              </span>
+            </th>
             <th>Desk</th>
             <th>Kind</th>
             <th>Hall</th>
@@ -137,22 +167,20 @@ export default function RoomManager({ rooms, desks, onChange }) {
           </tr>
         </thead>
         <tbody>
-          {[...rooms]
-            .sort((a, b) => a.deskId.localeCompare(b.deskId) || (a.hall || '').localeCompare(b.hall || '') || (a.row || 0) - (b.row || 0))
-            .map((r) => (
-              <tr key={r.id}>
-                <td>{r.code || '—'}</td>
-                <td>{desks.find((d) => d.id === r.deskId)?.name || '—'}</td>
-                <td>{kindLabel[r.kind || 'exam']}</td>
-                <td>{r.hall || '—'}</td>
-                <td>{r.hasWindow ? 'Window' : '—'}</td>
-                <td>{resolvedLabel(r)}</td>
-                <td className="row-actions">
-                  <button type="button" onClick={() => startEdit(r)}>Edit</button>
-                  <button type="button" onClick={() => requestDelete(r.id)}>Delete</button>
-                </td>
-              </tr>
-            ))}
+          {sortedRooms.map((r) => (
+            <tr key={r.id}>
+              <td>{r.code || '—'}</td>
+              <td>{desks.find((d) => d.id === r.deskId)?.name || '—'}</td>
+              <td>{kindLabel[r.kind || 'exam']}</td>
+              <td>{r.hall || '—'}</td>
+              <td>{r.hasWindow ? 'Window' : '—'}</td>
+              <td>{resolvedLabel(r)}</td>
+              <td className="row-actions">
+                <button type="button" onClick={() => startEdit(r)}>Edit</button>
+                <button type="button" onClick={() => requestDelete(r.id)}>Delete</button>
+              </td>
+            </tr>
+          ))}
         </tbody>
       </table>
 
