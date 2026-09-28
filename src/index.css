@@ -479,6 +479,34 @@ body {
   padding: 0 4px;
 }
 
+.provider-form-grid select[multiple] {
+  height: auto;
+  min-height: 84px;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--ink-soft);
+  font-weight: 400;
+}
+
+/* Inline edit row: the same .provider-form fields, but rendered inside a
+   <tr><td colSpan=...> right below the row being edited (see
+   ProviderManager.jsx / RoomManager.jsx) instead of scrolled down to the
+   bottom of the page. Drop the top border/padding the standalone
+   .provider-form uses, since it's already inside a table cell with its own
+   background to set it apart. */
+tr.inline-edit-row td {
+  background: var(--bg);
+  padding: 18px 14px;
+  border-bottom: 2px solid var(--accent);
+}
+
+.provider-form.inline {
+  border-top: none;
+  padding-top: 0;
+}
+
 .checkbox-label {
   display: flex !important;
   flex-direction: row !important;

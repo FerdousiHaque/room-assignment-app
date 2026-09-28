@@ -19,6 +19,12 @@ const emptyDraft = {
  * they're never part of the daily assignment pool (see assignmentEngine.js).
  * Currently backed by local state passed in as `rooms` + `onChange`; wire
  * to Firestore the same way as ProviderManager.
+ *
+ * Editing happens INLINE, same pattern as ProviderManager: clicking "Edit"
+ * on a row opens the same form fields in a row right below it instead of
+ * scrolling down to a shared form at the bottom. The bottom form is
+ * reserved for adding a new room and stays put; it's hidden while an
+ * existing row is being edited.
  */
 export default function RoomManager({ rooms, desks, onChange }) {
   const [draft, setDraft] = useState(emptyDraft);
@@ -27,8 +33,9 @@ export default function RoomManager({ rooms, desks, onChange }) {
   // popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   // Column sort, toggled by clicking a sortable header: column is null (the
-  // default desk/hall/row grouping below) or 'code' / 'desk'; clicking the
-  // active column flips 'asc' -> 'desc' -> back to the default grouping.
+  // table's default order — see sortedRooms below, room code ascending) or
+  // 'code' / 'desk'; clicking the active column flips 'asc' -> 'desc' ->
+  // back to the default.
   const [sort, setSort] = useState({ column: null, direction: 'asc' });
   const toggleSort = (column) => {
     setSort((prev) => {
@@ -131,24 +138,116 @@ export default function RoomManager({ rooms, desks, onChange }) {
 
   const deskName = (deskId) => desks.find((d) => d.id === deskId)?.name || '';
 
+  // numeric:true so "9E" sorts before "10E" instead of after it.
+  const byCodeAsc = (a, b) => (a.code || '').localeCompare(b.code || '', undefined, { numeric: true, sensitivity: 'base' });
+
   const sortedRooms = useMemo(() => {
     const list = [...rooms];
     if (sort.column === 'code') {
-      list.sort((a, b) => {
-        // numeric:true so "9E" sorts before "10E" instead of after it.
-        const cmp = (a.code || '').localeCompare(b.code || '', undefined, { numeric: true, sensitivity: 'base' });
-        return sort.direction === 'asc' ? cmp : -cmp;
-      });
+      list.sort((a, b) => (sort.direction === 'asc' ? 1 : -1) * byCodeAsc(a, b));
     } else if (sort.column === 'desk') {
       list.sort((a, b) => {
         const cmp = deskName(a.deskId).localeCompare(deskName(b.deskId), undefined, { numeric: true, sensitivity: 'base' });
         return sort.direction === 'asc' ? cmp : -cmp;
       });
     } else {
-      list.sort((a, b) => a.deskId.localeCompare(b.deskId) || (a.hall || '').localeCompare(b.hall || '') || (a.row || 0) - (b.row || 0));
+      // Default: room code ascending.
+      list.sort(byCodeAsc);
     }
     return list;
   }, [rooms, sort, desks]);
+
+  // Shared between the "Add room" form (bottom of the page) and the inline
+  // "Edit room" row — both just show/edit the same `draft` state, only one
+  // is ever open at a time.
+  const renderFormFields = () => (
+    <>
+      <div className="provider-form-grid">
+        <label>
+          <span>Room code {draft.kind === 'utility' ? '(optional)' : ''}</span>
+          <input value={draft.code} onChange={(e) => setDraft((d) => ({ ...d, code: e.target.value }))} placeholder="e.g. 22" />
+        </label>
+        <label>
+          <span>Desk</span>
+          <select value={draft.deskId} onChange={(e) => setDraft((d) => ({ ...d, deskId: e.target.value }))}>
+            <option value="">Select…</option>
+            {desks.map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>Kind</span>
+          <select value={draft.kind} onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value }))}>
+            <option value="exam">Exam room (daily pool)</option>
+            <option value="office">Permanent office</option>
+            <option value="utility">Utility / non-patient space</option>
+          </select>
+        </label>
+        {draft.kind !== 'exam' && (
+          <label>
+            <span>Label to print</span>
+            <input
+              value={draft.label}
+              onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
+              placeholder={draft.kind === 'office' ? 'e.g. Dr. Smith Office' : 'e.g. Hallway'}
+            />
+          </label>
+        )}
+        <label>
+          <span>Hall (floor-map grouping, optional)</span>
+          <input
+            value={draft.hall}
+            onChange={(e) => setDraft((d) => ({ ...d, hall: e.target.value }))}
+            placeholder="e.g. East A Hall 1"
+          />
+        </label>
+        {draft.hall.trim() && (
+          <>
+            <label>
+              <span>Row (same row = same printed line)</span>
+              <input
+                type="number"
+                value={draft.row}
+                onChange={(e) => setDraft((d) => ({ ...d, row: e.target.value }))}
+              />
+            </label>
+            <label>
+              <span>Side</span>
+              <select value={draft.side} onChange={(e) => setDraft((d) => ({ ...d, side: e.target.value }))}>
+                <option value="left">Left</option>
+                <option value="right">Right</option>
+              </select>
+            </label>
+          </>
+        )}
+        <label className="checkbox-label">
+          <input
+            type="checkbox"
+            checked={draft.hasWindow}
+            onChange={(e) => setDraft((d) => ({ ...d, hasWindow: e.target.checked }))}
+          />
+          Has window
+        </label>
+        {draft.kind === 'exam' && (
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={draft.videoCapable}
+              onChange={(e) => setDraft((d) => ({ ...d, videoCapable: e.target.checked }))}
+            />
+            Video capable
+          </label>
+        )}
+      </div>
+      <p className="upload-hint">
+        Leave Hall blank for a simple desk (its floor-map PDF page falls back to a plain list). Set Hall + Row + Side
+        on every room at a desk to reproduce a real two-column floor-plan layout like Desk A's.
+      </p>
+    </>
+  );
+
+  const columnCount = 7;
 
   return (
     <section className="provider-manager">
@@ -191,111 +290,49 @@ export default function RoomManager({ rooms, desks, onChange }) {
         </thead>
         <tbody>
           {sortedRooms.map((r) => (
-            <tr key={r.id}>
-              <td>{r.code || '—'}</td>
-              <td>{desks.find((d) => d.id === r.deskId)?.name || '—'}</td>
-              <td>{kindLabel[r.kind || 'exam']}</td>
-              <td>{r.hall || '—'}</td>
-              <td>{r.hasWindow ? 'Window' : '—'}</td>
-              <td>{resolvedLabel(r)}</td>
-              <td className="row-actions">
-                <button type="button" onClick={() => startEdit(r)}>Edit</button>
-                <button type="button" onClick={() => requestDelete(r.id)}>Delete</button>
-              </td>
-            </tr>
+            <React.Fragment key={r.id}>
+              <tr>
+                <td>{r.code || '—'}</td>
+                <td>{desks.find((d) => d.id === r.deskId)?.name || '—'}</td>
+                <td>{kindLabel[r.kind || 'exam']}</td>
+                <td>{r.hall || '—'}</td>
+                <td>{r.hasWindow ? 'Window' : '—'}</td>
+                <td>{resolvedLabel(r)}</td>
+                <td className="row-actions">
+                  <button type="button" onClick={() => (editingId === r.id ? resetDraft() : startEdit(r))}>
+                    {editingId === r.id ? 'Close' : 'Edit'}
+                  </button>
+                  <button type="button" onClick={() => requestDelete(r.id)}>Delete</button>
+                </td>
+              </tr>
+              {editingId === r.id && (
+                <tr className="inline-edit-row">
+                  <td colSpan={columnCount}>
+                    <div className="provider-form inline">
+                      <h3>Edit room</h3>
+                      {renderFormFields()}
+                      <div className="provider-form-actions">
+                        <button type="button" onClick={handleSave}>Save changes</button>
+                        <button type="button" onClick={resetDraft}>Cancel</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
           ))}
         </tbody>
       </table>
 
-      <div className="provider-form">
-        <h3>{editingId ? 'Edit room' : 'Add room'}</h3>
-        <div className="provider-form-grid">
-          <label>
-            <span>Room code {draft.kind === 'utility' ? '(optional)' : ''}</span>
-            <input value={draft.code} onChange={(e) => setDraft((d) => ({ ...d, code: e.target.value }))} placeholder="e.g. 22" />
-          </label>
-          <label>
-            <span>Desk</span>
-            <select value={draft.deskId} onChange={(e) => setDraft((d) => ({ ...d, deskId: e.target.value }))}>
-              <option value="">Select…</option>
-              {desks.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Kind</span>
-            <select value={draft.kind} onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value }))}>
-              <option value="exam">Exam room (daily pool)</option>
-              <option value="office">Permanent office</option>
-              <option value="utility">Utility / non-patient space</option>
-            </select>
-          </label>
-          {draft.kind !== 'exam' && (
-            <label>
-              <span>Label to print</span>
-              <input
-                value={draft.label}
-                onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
-                placeholder={draft.kind === 'office' ? 'e.g. Dr. Smith Office' : 'e.g. Hallway'}
-              />
-            </label>
-          )}
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={draft.hasWindow}
-              onChange={(e) => setDraft((d) => ({ ...d, hasWindow: e.target.checked }))}
-            />
-            Has window
-          </label>
-          {draft.kind === 'exam' && (
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={draft.videoCapable}
-                onChange={(e) => setDraft((d) => ({ ...d, videoCapable: e.target.checked }))}
-              />
-              Video capable
-            </label>
-          )}
-          <label>
-            <span>Hall (floor-map grouping, optional)</span>
-            <input
-              value={draft.hall}
-              onChange={(e) => setDraft((d) => ({ ...d, hall: e.target.value }))}
-              placeholder="e.g. East A Hall 1"
-            />
-          </label>
-          {draft.hall.trim() && (
-            <>
-              <label>
-                <span>Row (same row = same printed line)</span>
-                <input
-                  type="number"
-                  value={draft.row}
-                  onChange={(e) => setDraft((d) => ({ ...d, row: e.target.value }))}
-                />
-              </label>
-              <label>
-                <span>Side</span>
-                <select value={draft.side} onChange={(e) => setDraft((d) => ({ ...d, side: e.target.value }))}>
-                  <option value="left">Left</option>
-                  <option value="right">Right</option>
-                </select>
-              </label>
-            </>
-          )}
+      {editingId === null && (
+        <div className="provider-form">
+          <h3>Add room</h3>
+          {renderFormFields()}
+          <div className="provider-form-actions">
+            <button type="button" onClick={handleSave}>Add room</button>
+          </div>
         </div>
-        <p className="upload-hint">
-          Leave Hall blank for a simple desk (its floor-map PDF page falls back to a plain list). Set Hall + Row + Side
-          on every room at a desk to reproduce a real two-column floor-plan layout like Desk A's.
-        </p>
-        <div className="provider-form-actions">
-          <button type="button" onClick={handleSave}>{editingId ? 'Save changes' : 'Add room'}</button>
-          {editingId && <button type="button" onClick={resetDraft}>Cancel</button>}
-        </div>
-      </div>
+      )}
 
       <ConfirmDialog
         open={pendingDeleteId !== null}

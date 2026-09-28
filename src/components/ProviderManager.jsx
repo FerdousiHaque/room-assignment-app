@@ -8,6 +8,7 @@ const emptyDraft = {
   preferredNumberOfRooms: 1,
   primaryPreferredRoomId: '',
   secondPreferredRoomId: '',
+  otherPreferredRoomCodesText: '', // raw comma-separated text as typed; parsed to otherPreferredRoomCodes on save
   windowPreference: 'none',
   alternateDeskIds: [],
   alternateRoomCodesText: '', // raw comma-separated text as typed; parsed to alternateRoomCodes on save
@@ -44,6 +45,14 @@ function parseRoomCodes(text) {
  * flag. "Has office on this floor" stays here because it's a fixed fact
  * about the provider, and combined with the day's video-visit signal it
  * decides whether a video-capable room is required that day.
+ *
+ * Editing happens INLINE: clicking "Edit" on a row opens the same form
+ * fields in a row right below it, instead of the page scrolling down to a
+ * shared form at the bottom. The bottom form is reserved for adding a new
+ * provider and stays exactly where it was; it's hidden while an existing
+ * row is being edited (the same `draft` state drives both, so only one of
+ * the two can be open at a time), and comes back once the edit is saved or
+ * cancelled.
  */
 export default function ProviderManager({ providers, desks, rooms, onChange }) {
   const [draft, setDraft] = useState(emptyDraft);
@@ -53,8 +62,8 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
   // confirm popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   // Column sort, toggled by clicking a sortable header: column is null (the
-  // table's natural/insertion order) or 'name' / 'desk'; clicking the active
-  // column flips 'asc' -> 'desc' -> back to the natural order.
+  // table's default order — see sortedProviders below) or 'name' / 'desk';
+  // clicking the active column flips 'asc' -> 'desc' -> back to the default.
   const [sort, setSort] = useState({ column: null, direction: 'asc' });
   const toggleSort = (column) => {
     setSort((prev) => {
@@ -65,6 +74,9 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
   };
   const sortIcon = (column) => (sort.column !== column ? '⇅' : sort.direction === 'asc' ? '▲' : '▼');
 
+  // Used to restrict the Primary/Second preferred room dropdowns to the
+  // provider's own selected desk, so they can't pick a room from a desk
+  // they don't work at.
   const roomsForDesk = (deskId) => rooms.filter((r) => r.deskId === deskId);
 
   const resetDraft = () => {
@@ -81,6 +93,7 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
       preferredNumberOfRooms: provider.preferredNumberOfRooms || 1,
       primaryPreferredRoomId: provider.primaryPreferredRoomId || '',
       secondPreferredRoomId: provider.secondPreferredRoomId || '',
+      otherPreferredRoomCodesText: (provider.otherPreferredRoomCodes || []).join(', '),
       windowPreference: provider.windowPreference,
       alternateDeskIds: provider.alternateDeskIds || [],
       alternateRoomCodesText: (provider.alternateRoomCodes || []).join(', '),
@@ -91,13 +104,9 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
     setEditingId(provider.id);
   };
 
-  const toggleAlternateDesk = (deskId) => {
-    setDraft((d) => ({
-      ...d,
-      alternateDeskIds: d.alternateDeskIds.includes(deskId)
-        ? d.alternateDeskIds.filter((id) => id !== deskId)
-        : [...d.alternateDeskIds, deskId]
-    }));
+  const handleAlternateDesksChange = (e) => {
+    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+    setDraft((d) => ({ ...d, alternateDeskIds: selected }));
   };
 
   const handleSave = () => {
@@ -120,11 +129,12 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
     }
 
     const name = `${draft.firstName} ${draft.lastName}`;
-    const { alternateRoomCodesText, ...rest } = draft;
+    const { alternateRoomCodesText, otherPreferredRoomCodesText, ...rest } = draft;
     const record = {
       ...rest,
       preferredNumberOfRooms: Number(draft.preferredNumberOfRooms),
       alternateRoomCodes: parseRoomCodes(alternateRoomCodesText),
+      otherPreferredRoomCodes: parseRoomCodes(otherPreferredRoomCodesText),
       name
     };
 
@@ -151,21 +161,174 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
   const pendingDeleteProvider = providers.find((p) => p.id === pendingDeleteId);
   const deskName = (deskId) => desks.find((d) => d.id === deskId)?.name || '';
 
+  // Default order is by last name, ascending (then first name to break
+  // ties) — matches how the Name column displays ("Last, First"), and is
+  // what the Name header's own asc/desc toggle also sorts by.
+  const byLastNameAsc = (a, b) =>
+    (a.lastName || '').localeCompare(b.lastName || '', undefined, { numeric: true, sensitivity: 'base' }) ||
+    (a.firstName || '').localeCompare(b.firstName || '', undefined, { numeric: true, sensitivity: 'base' });
+
   const sortedProviders = useMemo(() => {
     const list = [...providers];
     if (sort.column === 'name') {
-      list.sort((a, b) => {
-        const cmp = (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
-        return sort.direction === 'asc' ? cmp : -cmp;
-      });
+      list.sort((a, b) => (sort.direction === 'asc' ? 1 : -1) * byLastNameAsc(a, b));
     } else if (sort.column === 'desk') {
       list.sort((a, b) => {
         const cmp = deskName(a.homeDeskId).localeCompare(deskName(b.homeDeskId), undefined, { numeric: true, sensitivity: 'base' });
         return sort.direction === 'asc' ? cmp : -cmp;
       });
+    } else {
+      list.sort(byLastNameAsc);
     }
     return list;
   }, [providers, sort, desks]);
+
+  // Shared between the "Add provider" form (bottom of the page) and the
+  // inline "Edit provider" row — both just show/edit the same `draft`
+  // state, only one is ever open at a time (see the component doc comment).
+  const renderFormFields = () => (
+    <div className="provider-form-grid">
+      <label>
+        <span>First name</span>
+        <input value={draft.firstName} onChange={(e) => setDraft((d) => ({ ...d, firstName: e.target.value }))} />
+      </label>
+      <label>
+        <span>Last name</span>
+        <input value={draft.lastName} onChange={(e) => setDraft((d) => ({ ...d, lastName: e.target.value }))} />
+      </label>
+      <label>
+        <span>Default desk</span>
+        <select
+          value={draft.homeDeskId}
+          onChange={(e) =>
+            setDraft((d) => ({
+              ...d,
+              homeDeskId: e.target.value,
+              // Primary/second preferred room are always filtered to the
+              // selected desk (see the two dropdowns below) — if the desk
+              // changes, drop any previous pick that no longer belongs to
+              // it rather than silently keeping a room from the old desk.
+              primaryPreferredRoomId: roomsForDesk(e.target.value).some((r) => r.id === d.primaryPreferredRoomId)
+                ? d.primaryPreferredRoomId
+                : '',
+              secondPreferredRoomId: roomsForDesk(e.target.value).some((r) => r.id === d.secondPreferredRoomId)
+                ? d.secondPreferredRoomId
+                : ''
+            }))
+          }
+        >
+          <option value="">Select…</option>
+          {desks.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>Preferred number of rooms</span>
+        <select
+          value={draft.preferredNumberOfRooms}
+          onChange={(e) => setDraft((d) => ({ ...d, preferredNumberOfRooms: e.target.value }))}
+        >
+          <option value={1}>1</option>
+          <option value={2}>2</option>
+        </select>
+      </label>
+      <label>
+        <span>Primary preferred room</span>
+        <select
+          value={draft.primaryPreferredRoomId}
+          onChange={(e) => setDraft((d) => ({ ...d, primaryPreferredRoomId: e.target.value }))}
+        >
+          <option value="">None</option>
+          {roomsForDesk(draft.homeDeskId).map((r) => (
+            <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>Second preferred room</span>
+        <select
+          value={draft.secondPreferredRoomId}
+          onChange={(e) => setDraft((d) => ({ ...d, secondPreferredRoomId: e.target.value }))}
+          disabled={draft.preferredNumberOfRooms != 2}
+        >
+          <option value="">None</option>
+          {roomsForDesk(draft.homeDeskId).map((r) => (
+            <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        <span>Other Set of Rooms (comma separated)</span>
+        <input
+          placeholder="e.g. 12, 14E"
+          value={draft.otherPreferredRoomCodesText}
+          onChange={(e) => setDraft((d) => ({ ...d, otherPreferredRoomCodesText: e.target.value }))}
+        />
+      </label>
+      <label>
+        <span>Window preference</span>
+        <select
+          value={draft.windowPreference}
+          onChange={(e) => setDraft((d) => ({ ...d, windowPreference: e.target.value }))}
+        >
+          <option value="none">No preference</option>
+          <option value="prefers">Prefers window</option>
+        </select>
+      </label>
+      <label>
+        <span>Fixed room</span>
+        <select
+          value={draft.fixedRoom ? 'yes' : 'no'}
+          onChange={(e) => setDraft((d) => ({ ...d, fixedRoom: e.target.value === 'yes' }))}
+        >
+          <option value="no">No</option>
+          <option value="yes">Yes</option>
+        </select>
+      </label>
+      <label>
+        <span>Provider Type</span>
+        <select
+          value={draft.type}
+          onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value }))}
+        >
+          <option value="Any">Any</option>
+          <option value="Doctor">Doctor</option>
+          <option value="Fellow">Fellow</option>
+          <option value="Nurse">Nurse</option>
+        </select>
+      </label>
+      <label>
+        <span>Alt desk rooms (comma separated)</span>
+        <input
+          placeholder="e.g. 23E, 68W"
+          value={draft.alternateRoomCodesText}
+          onChange={(e) => setDraft((d) => ({ ...d, alternateRoomCodesText: e.target.value }))}
+        />
+      </label>
+      <label>
+        <span>Alternate desks (overflow-eligible)</span>
+        <select multiple value={draft.alternateDeskIds} onChange={handleAlternateDesksChange}>
+          {desks
+            .filter((d) => d.id !== draft.homeDeskId)
+            .map((d) => (
+              <option key={d.id} value={d.id}>{d.name}</option>
+            ))}
+        </select>
+        <small className="field-hint">Hold Ctrl/Cmd (or Cmd on Mac) to select more than one.</small>
+      </label>
+      <label className="checkbox-label">
+        <input
+          type="checkbox"
+          checked={draft.hasOfficeOnFloor}
+          onChange={(e) => setDraft((d) => ({ ...d, hasOfficeOnFloor: e.target.checked }))}
+        />
+        Has office on this floor
+      </label>
+    </div>
+  );
+
+  const columnCount = 12;
 
   return (
     <section className="provider-manager">
@@ -210,160 +373,61 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
         </thead>
         <tbody>
           {sortedProviders.map((p) => (
-            <tr key={p.id}>
-              <td>{p.name}</td>
-              <td>{desks.find((d) => d.id === p.homeDeskId)?.name || '—'}</td>
-              <td>{p.preferredNumberOfRooms || 1}</td>
-              <td>{p.primaryPreferredRoomId ? roomCode(p.primaryPreferredRoomId) || '—' : '—'}</td>
-              <td>{p.secondPreferredRoomId ? roomCode(p.secondPreferredRoomId) || '—' : '—'}</td>
-              <td>{p.windowPreference === 'prefers' ? 'Prefers' : '—'}</td>
-              <td>
-                {(p.alternateDeskIds || [])
-                  .map((id) => desks.find((d) => d.id === id)?.name)
-                  .filter(Boolean)
-                  .join(', ') || '—'}
-              </td>
-              <td>{(p.alternateRoomCodes || []).join(', ') || '—'}</td>
-              <td>{p.hasOfficeOnFloor ? 'Yes' : 'No'}</td>
-              <td>{p.fixedRoom ? 'Yes' : 'No'}</td>
-              <td>{p.type || 'Any'}</td>
-              <td className="row-actions">
-                <button type="button" onClick={() => startEdit(p)}>Edit</button>
-                <button type="button" onClick={() => requestDelete(p.id)}>Delete</button>
-              </td>
-            </tr>
+            <React.Fragment key={p.id}>
+              <tr>
+                <td>{p.lastName}, {p.firstName}</td>
+                <td>{desks.find((d) => d.id === p.homeDeskId)?.name || '—'}</td>
+                <td>{p.preferredNumberOfRooms || 1}</td>
+                <td>{p.primaryPreferredRoomId ? roomCode(p.primaryPreferredRoomId) || '—' : '—'}</td>
+                <td>{p.secondPreferredRoomId ? roomCode(p.secondPreferredRoomId) || '—' : '—'}</td>
+                <td>{p.windowPreference === 'prefers' ? 'Prefers' : '—'}</td>
+                <td>
+                  {(p.alternateDeskIds || [])
+                    .map((id) => desks.find((d) => d.id === id)?.name)
+                    .filter(Boolean)
+                    .join(', ') || '—'}
+                </td>
+                <td>{(p.alternateRoomCodes || []).join(', ') || '—'}</td>
+                <td>{p.hasOfficeOnFloor ? 'Yes' : 'No'}</td>
+                <td>{p.fixedRoom ? 'Yes' : 'No'}</td>
+                <td>{p.type || 'Any'}</td>
+                <td className="row-actions">
+                  <button type="button" onClick={() => (editingId === p.id ? resetDraft() : startEdit(p))}>
+                    {editingId === p.id ? 'Close' : 'Edit'}
+                  </button>
+                  <button type="button" onClick={() => requestDelete(p.id)}>Delete</button>
+                </td>
+              </tr>
+              {editingId === p.id && (
+                <tr className="inline-edit-row">
+                  <td colSpan={columnCount}>
+                    <div className="provider-form inline">
+                      <h3>Edit provider</h3>
+                      {renderFormFields()}
+                      {error && <p className="upload-error">{error}</p>}
+                      <div className="provider-form-actions">
+                        <button type="button" onClick={handleSave}>Save changes</button>
+                        <button type="button" onClick={resetDraft}>Cancel</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
           ))}
         </tbody>
       </table>
 
-      <div className="provider-form">
-        <h3>{editingId ? 'Edit provider' : 'Add provider'}</h3>
-        <div className="provider-form-grid">
-          <label>
-            <span>First name</span>
-            <input value={draft.firstName} onChange={(e) => setDraft((d) => ({ ...d, firstName: e.target.value }))} />
-          </label>
-          <label>
-            <span>Last name</span>
-            <input value={draft.lastName} onChange={(e) => setDraft((d) => ({ ...d, lastName: e.target.value }))} />
-          </label>
-          <label>
-            <span>Default desk</span>
-            <select
-              value={draft.homeDeskId}
-              onChange={(e) => setDraft((d) => ({ ...d, homeDeskId: e.target.value }))}
-            >
-              <option value="">Select…</option>
-              {desks.map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Preferred number of rooms</span>
-            <select
-              value={draft.preferredNumberOfRooms}
-              onChange={(e) => setDraft((d) => ({ ...d, preferredNumberOfRooms: e.target.value }))}
-            >
-              <option value={1}>1</option>
-              <option value={2}>2</option>
-            </select>
-          </label>
-          <label>
-            <span>Primary preferred room</span>
-            <select
-              value={draft.primaryPreferredRoomId}
-              onChange={(e) => setDraft((d) => ({ ...d, primaryPreferredRoomId: e.target.value }))}
-            >
-              <option value="">None</option>
-              {rooms.map((r) => (
-                <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Second preferred room</span>
-            <select
-              value={draft.secondPreferredRoomId}
-              onChange={(e) => setDraft((d) => ({ ...d, secondPreferredRoomId: e.target.value }))}
-              disabled={draft.preferredNumberOfRooms != 2}
-            >
-              <option value="">None</option>
-              {rooms.map((r) => (
-                <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Window preference</span>
-            <select
-              value={draft.windowPreference}
-              onChange={(e) => setDraft((d) => ({ ...d, windowPreference: e.target.value }))}
-            >
-              <option value="none">No preference</option>
-              <option value="prefers">Prefers window</option>
-            </select>
-          </label>
-          <label>
-            <span>Alt desk rooms (comma separated)</span>
-            <input
-              placeholder="e.g. 23E, 68W"
-              value={draft.alternateRoomCodesText}
-              onChange={(e) => setDraft((d) => ({ ...d, alternateRoomCodesText: e.target.value }))}
-            />
-          </label>
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={draft.hasOfficeOnFloor}
-              onChange={(e) => setDraft((d) => ({ ...d, hasOfficeOnFloor: e.target.checked }))}
-            />
-            Has office on this floor
-          </label>
-          <fieldset>
-            <legend>Alternate desks (overflow-eligible)</legend>
-            {desks
-              .filter((d) => d.id !== draft.homeDeskId)
-              .map((d) => (
-                <label key={d.id} className="checkbox-label">
-                  <input
-                    type="checkbox"
-                    checked={draft.alternateDeskIds.includes(d.id)}
-                    onChange={() => toggleAlternateDesk(d.id)}
-                  />
-                  {d.name}
-                </label>
-              ))}
-          </fieldset>
-          <label>
-            <span>Fixed room</span>
-            <select
-              value={draft.fixedRoom ? 'yes' : 'no'}
-              onChange={(e) => setDraft((d) => ({ ...d, fixedRoom: e.target.value === 'yes' }))}
-            >
-              <option value="no">No</option>
-              <option value="yes">Yes</option>
-            </select>
-          </label>
-          <label>
-            <span>Type</span>
-            <select
-              value={draft.type}
-              onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value }))}
-            >
-              <option value="Any">Any</option>
-              <option value="Doctor">Doctor</option>
-              <option value="Fellow">Fellow</option>
-              <option value="Nurse">Nurse</option>
-            </select>
-          </label>
+      {editingId === null && (
+        <div className="provider-form">
+          <h3>Add provider</h3>
+          {renderFormFields()}
+          {error && <p className="upload-error">{error}</p>}
+          <div className="provider-form-actions">
+            <button type="button" onClick={handleSave}>Add provider</button>
+          </div>
         </div>
-        {error && <p className="upload-error">{error}</p>}
-        <div className="provider-form-actions">
-          <button type="button" onClick={handleSave}>{editingId ? 'Save changes' : 'Add provider'}</button>
-          {editingId && <button type="button" onClick={resetDraft}>Cancel</button>}
-        </div>
-      </div>
+      )}
 
       <ConfirmDialog
         open={pendingDeleteId !== null}

@@ -324,7 +324,12 @@ export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
   const grouped = new Map(); // "deskId||name" -> { deskId, name, patientCount, times }
 
   for (const row of unmatchedRows) {
-    const name = (row.provider || 'Unknown provider').trim();
+    // Trim FIRST, then fall back — a whitespace-only provider field (e.g.
+    // OCR read something unusable) is truthy, so `row.provider || '...'`
+    // alone would keep the blank string and the room would show no name at
+    // all instead of falling back. See rule: an unmatched name must still
+    // be shown, never blank, even though it isn't in the Providers list.
+    const name = (row.provider || '').trim() || 'Unknown provider';
     const key = `${row.deskId}||${normalizeName(name)}`;
     if (!grouped.has(key)) grouped.set(key, { deskId: row.deskId, name, patientCount: 0, times: [] });
     const g = grouped.get(key);
