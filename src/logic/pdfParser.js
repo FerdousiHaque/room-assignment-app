@@ -189,13 +189,28 @@ export function deriveSession(timeStrings) {
  * "LastName, FirstName" (or "FirstName LastName") -> normalized key for
  * matching against provider records, which store firstName/lastName
  * separately.
+ *
+ * Real Epic exports commonly go further than plain "Last, First" —
+ * e.g. "Mueller, Theodore L, R.N." or "Titan, Silvia M, M.D., Ph.D." — with
+ * a middle initial tacked onto the first-name part and one or more
+ * credentials (R.N., APRN, M.D., Ph.D., M.B.B.S., ...) as further
+ * comma-separated segments after that. Providers are entered here by
+ * first/last name only (see ProviderManager.jsx), so both the middle
+ * initial and every credential segment are dropped for matching purposes:
+ * only the first two comma segments (last name, first name) are used, and
+ * a trailing single-letter "word" on the first-name segment (the middle
+ * initial) is stripped.
  */
 export function normalizeName(raw) {
   if (!raw) return '';
   const cleaned = raw.replace(/\s+/g, ' ').trim();
   if (cleaned.includes(',')) {
-    const [last, first] = cleaned.split(',').map((s) => s.trim());
-    return `${first} ${last}`.toLowerCase();
+    const parts = cleaned.split(',').map((s) => s.trim()).filter(Boolean);
+    const last = parts[0] || '';
+    // parts[1] is "First[, Middle initial]"; parts[2+] (if any) are
+    // credentials and are ignored entirely — never part of the match key.
+    const first = (parts[1] || '').replace(/\s+[A-Za-z]\.?$/, '');
+    return `${first} ${last}`.toLowerCase().trim();
   }
   return cleaned.toLowerCase();
 }
