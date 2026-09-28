@@ -151,7 +151,33 @@ export async function parseDeskScheduleFileAuto(file, deskId) {
   const textRows = await parseDeskScheduleFile(file, deskId);
   if (textRows.length > 0) return textRows;
 
-  const { parseDeskScheduleFileOcr } = await import('./pdfOcrParser.js');
+  let ocrModule;
+  try {
+    ocrModule = await import('./pdfOcrParser.js');
+  } catch (err) {
+    // Every deploy replaces the whole build, including every hashed chunk
+    // filename. A tab that was already open from before the latest deploy
+    // still has the OLD filename baked into its in-memory bundle, and that
+    // file no longer exists on the server — Firebase Hosting's catch-all
+    // rewrite then serves index.html instead of a 404, which shows up here
+    // as "Failed to fetch dynamically imported module" / a MIME-type error,
+    // not as anything about the PDF itself. A one-time reload picks up the
+    // current build and its correct filenames; guard with sessionStorage so
+    // a genuinely broken deploy can't reload-loop forever.
+    if (!window.sessionStorage.getItem('reloaded-for-stale-build')) {
+      window.sessionStorage.setItem('reloaded-for-stale-build', '1');
+      window.location.reload();
+      return new Promise(() => {}); // navigating away; never resolve
+    }
+    throw new Error('This page is running an out-of-date version of the site. Please refresh your browser and try again.');
+  }
+
+  // A successful dynamic import means the current build is fine — clear the
+  // guard so a *future* deploy's stale-chunk error can still auto-heal once
+  // rather than jumping straight to the manual-refresh message.
+  window.sessionStorage.removeItem('reloaded-for-stale-build');
+
+  const { parseDeskScheduleFileOcr } = ocrModule;
   return parseDeskScheduleFileOcr(file, deskId);
 }
 
