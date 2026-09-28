@@ -382,7 +382,13 @@ export async function parseDeskScheduleFileOcr(file, deskId, opts = {}) {
           patient: summary.Patient || '',
           mrn: summary.MRN || '',
           provider: provider || '',
-          videoFlag: icon === 'video' ? 'yes' : undefined
+          // Omit the key entirely when it's not a video visit, rather than
+          // setting it to `undefined` — these rows get written straight into
+          // Firestore (see firestoreSync.js's saveDayRows), and Firestore's
+          // setDoc() rejects any field whose value is literally `undefined`
+          // ("Unsupported field value: undefined"). That rejection used to
+          // silently fail the whole day's save.
+          ...(icon === 'video' ? { videoFlag: 'yes' } : {})
         });
       }
     }

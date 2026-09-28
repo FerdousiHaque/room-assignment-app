@@ -17,8 +17,32 @@
  *   appState/day-<YYYY-MM-DD>  { rowsByDesk: { [deskId]: Row[] } }  -- one per day, so old days don't linger
  * ------------------------------------------------------------------
  */
-import { doc, onSnapshot, setDoc, getDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, getDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase.js';
+
+/**
+ * Recursively drops any object key whose value is `undefined` (arrays are
+ * walked but not otherwise altered). Firestore's setDoc() rejects a document
+ * containing an `undefined` value anywhere in it ("Unsupported field value:
+ * undefined") and fails the WHOLE write — including everything else in the
+ * same document — rather than just skipping that one field. Parsed schedule
+ * rows are the main source of these (an optional column that a given icon/
+ * value doesn't apply to), so every write in this file runs through this
+ * first as a safety net, on top of not producing `undefined` in the first
+ * place at the source (see pdfOcrParser.js).
+ */
+function stripUndefined(value) {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (v === undefined) continue;
+      out[k] = stripUndefined(v);
+    }
+    return out;
+  }
+  return value;
+}
 
 /**
  * Subscribes to a `{ list: [...] }` doc, seeding it with `seedValue` the
@@ -65,11 +89,11 @@ export function subscribeRooms(seedRooms, callback) {
 }
 
 export async function saveProviders(nextProviders) {
-  await setDoc(doc(db, 'appState', 'providers'), { list: nextProviders });
+  await setDoc(doc(db, 'appState', 'providers'), { list: stripUndefined(nextProviders) });
 }
 
 export async function saveRooms(nextRooms) {
-  await setDoc(doc(db, 'appState', 'rooms'), { list: nextRooms });
+  await setDoc(doc(db, 'appState', 'rooms'), { list: stripUndefined(nextRooms) });
 }
 
 // ---- Per-day uploaded schedule rows (so all desks/users see the same
@@ -89,11 +113,23 @@ export function subscribeDayRows(date, callback) {
 }
 
 export async function saveDayRows(date, rowsByDesk) {
-  await setDoc(doc(db, 'appState', dayDocId(date)), { rowsByDesk });
+  await setDoc(doc(db, 'appState', dayDocId(date)), { rowsByDesk: stripUndefined(rowsByDesk) });
 }
 
 /** One-off read, used only if a caller needs the current value without subscribing. */
 export async function getDayRows(date) {
   const snap = await getDoc(doc(db, 'appState', dayDocId(date)));
   return snap.exists() ? snap.data().rowsByDesk || {} : {};
+}
+
+/**
+ * Deletes a single day's uploaded-rows doc outright. Each day already lives
+ * under its own doc id (day-YYYY-MM-DD), so a new day never reads a prior
+ * day's data by construction — this goes a step further and actively wipes
+ * yesterday's doc once a new day starts (see App.jsx), so an imported
+ * schedule is never left sitting in the database past the day it was for.
+ * Safe to call on a doc that doesn't exist (no-op).
+ */
+export async function deleteDayRows(date) {
+  await deleteDoc(doc(db, 'appState', dayDocId(date)));
 }

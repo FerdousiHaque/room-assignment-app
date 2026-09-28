@@ -49,16 +49,21 @@
  *    Pseudo ("unmatched name") providers are exempt from this — per an
  *    earlier requirement they silently fill whatever's open and are
  *    simply dropped (no warning, no Not Found entry) if nothing's open.
- * 13. NEW — provider.fixedRoom: when true, this provider's room(s) are
- *    reserved up front, before anything else is assigned, from their
- *    primaryPreferredRoomId (slot 0) and secondPreferredRoomId (slot 1,
- *    if preferredNumberOfRooms is 2) — no scoring, no substitution. If a
+ * 13. NEW — provider.fixedRoom: when true AND the provider has at least one
+ *    patient that day (dayEntries[].patientCount > 0), this provider's
+ *    room(s) are reserved up front, before anything else is assigned, from
+ *    their primaryPreferredRoomId (slot 0) and secondPreferredRoomId (slot
+ *    1, if preferredNumberOfRooms is 2) — no scoring, no substitution. If a
  *    fixed room isn't set or isn't available that session (blocked or
  *    already reserved by another fixed-room provider), that slot shows
  *    "Not Found"; it is NEVER filled by a different room and NEVER sent
  *    through overflow to another desk. This reservation happens before
  *    any non-fixed provider is placed, so a fixed-room provider's room
- *    can't be taken by someone else first.
+ *    can't be taken by someone else first. If the provider has NO patients
+ *    that day (patientCount is 0 or missing), the room is not reserved at
+ *    all — it's released back into the normal pool so another provider can
+ *    use it, and this entry is placed through the ordinary tiered flow
+ *    like any non-fixed provider.
  * 14. NEW — provider.type ('Doctor' | 'Fellow' | 'Any' | 'Nurse', default
  *    'Any'): assignment happens in priority tiers, in that order — every
  *    Doctor (across all desks, including their overflow) is placed before
@@ -260,7 +265,10 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   const normalEntries = [];
   for (const desk of desks) {
     for (const entry of entriesByHomeDesk[desk.id]) {
-      if (entry.provider.fixedRoom) fixedEntries.push(entry);
+      // A fixed-room provider only has their room reserved on a day they
+      // actually have patients — with none scheduled, the room is free for
+      // anyone else and this entry is placed through the normal flow.
+      if (entry.provider.fixedRoom && entry.patientCount > 0) fixedEntries.push(entry);
       else normalEntries.push(entry);
     }
   }

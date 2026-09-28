@@ -15,7 +15,8 @@ import {
   subscribeDayRows,
   saveProviders,
   saveRooms,
-  saveDayRows
+  saveDayRows,
+  deleteDayRows
 } from './data/firestoreSync.js';
 
 // Room blocking is disabled for now (per request), but NOT deleted — the
@@ -37,6 +38,13 @@ import {
 // from the imported schedule itself, this is the place to swap it in.
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** 'YYYY-MM-DD' -> the previous calendar day, same format. */
+function previousDayIso(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 export default function App() {
@@ -62,6 +70,17 @@ export default function App() {
     });
     const unsubRooms = subscribeRooms(seedRooms, (list) => setRoomsLocal(list));
     const unsubDay = subscribeDayRows(date, (rows) => setRowsByDeskLocal(rows));
+
+    // An imported schedule is only ever for the day it was uploaded — once
+    // a new day starts, yesterday's uploaded rows are wiped outright rather
+    // than just left unread, so nothing from a prior day can ever be saved
+    // over into, or re-surface on, today. Best-effort: this doc is already
+    // scoped to its own date, so a failure here just leaves an old, unused
+    // doc sitting in the database rather than causing any visible problem.
+    deleteDayRows(previousDayIso(date)).catch((err) => {
+      console.warn(`Could not clear yesterday's uploaded rows (non-fatal):`, err);
+    });
+
     return () => {
       unsubProviders();
       unsubRooms();
@@ -97,23 +116,38 @@ export default function App() {
   // Recomputed live from whatever has been submitted so far — submitting
   // just one desk is enough to see that desk's assignments; submitting a
   // second desk adds to the same report rather than starting over.
-  const { dayEntries, effectiveProviders } = useMemo(() => {
-    if (combinedRows.length === 0) return { dayEntries: null, effectiveProviders: providers };
+  const { dayEntries, effectiveProviders, unmatchedNames } = useMemo(() => {
+    if (combinedRows.length === 0) return { dayEntries: null, effectiveProviders: providers, unmatchedNames: [] };
     const { dayEntries: matchedEntries, unmatched } = deriveDayEntries(combinedRows, providers);
     const { pseudoProviders, pseudoDayEntries } = buildUnmatchedProviderEntries(unmatched, desks);
     return {
       dayEntries: [...matchedEntries, ...pseudoDayEntries],
-      effectiveProviders: [...providers, ...pseudoProviders]
+      effectiveProviders: [...providers, ...pseudoProviders],
+      // Distinct raw names from the uploaded file that didn't match anyone
+      // on the Providers tab — surfaced as a warning below so an empty-
+      // looking report is traceable to a name mismatch instead of looking
+      // like a silent bug. These rows still get placed on-screen (as
+      // unlabeled fill-ins), just never in the Provider assignment report
+      // or the exported PDF.
+      unmatchedNames: [...new Set(unmatched.map((r) => (r.provider || '').trim()).filter(Boolean))]
     };
   }, [combinedRows, providers, desks]);
 
-  const { assignments, warnings } = useMemo(() => {
+  const { assignments, warnings: engineWarnings } = useMemo(() => {
     if (!dayEntries) return { assignments: [], warnings: [] };
     // roomBlocks is hardcoded to [] while the room-blocking feature is
     // disabled (see the commented-out import above) — the engine still
     // accepts and checks a roomBlocks array, it's just never populated.
     return generateDailyAssignments({ desks, rooms, providers: effectiveProviders, dayEntries, roomBlocks: [], date });
   }, [dayEntries, effectiveProviders, rooms, date]);
+
+  const warnings = useMemo(() => {
+    if (unmatchedNames.length === 0) return engineWarnings;
+    return [
+      `${unmatchedNames.length} name(s) from the uploaded schedule didn't match anyone on the Providers tab, so they're filling rooms on screen but are left OUT of the Provider assignment report and the exported PDF: ${unmatchedNames.join(', ')}. Add them as providers (spelled exactly as in the PDF) if they should be included.`,
+      ...engineWarnings
+    ];
+  }, [unmatchedNames, engineWarnings]);
 
   // Real (non-pseudo) provider assignments only — this is what the
   // never-drop-provider report shows. Pseudo/unmatched-name entries are
@@ -132,8 +166,70 @@ export default function App() {
     });
   };
 
+  // Runs the assignment engine scoped to ONE desk only — just that desk's
+  // own rooms, and only the rows from that desk's own submitted file
+  // (never another desk's rows). Passing a single-desk `desks` array to the
+  // engine means a provider's alternateDeskIds can never resolve to a real
+  // desk, so overflow is naturally impossible here — an unfilled slot comes
+  // back "Not Found" instead of being sent to another desk. This is what
+  // the per-desk Submit/Download flow uses; "Submit All" (below) is the
+  // only path that considers alternate desks, since it's the only one with
+  // every desk's data in hand at once.
+  const buildDeskOnlyReport = (desk, deskRows) => {
+    const deskOnlyRooms = rooms.filter((r) => r.deskId === desk.id);
+    const { dayEntries: matchedEntries, unmatched } = deriveDayEntries(deskRows, providers);
+    const { pseudoProviders, pseudoDayEntries } = buildUnmatchedProviderEntries(unmatched, [desk]);
+    const { assignments: deskAssignments } = generateDailyAssignments({
+      desks: [desk],
+      rooms: deskOnlyRooms,
+      providers: [...providers, ...pseudoProviders],
+      dayEntries: [...matchedEntries, ...pseudoDayEntries],
+      roomBlocks: [],
+      date
+    });
+    return {
+      rooms: deskOnlyRooms,
+      assignments: deskAssignments.filter((a) => !a.providerId.startsWith('unmatched-'))
+    };
+  };
+
   const handleDownloadDesk = (desk) => {
-    downloadDeskAssignmentPdf({ desk, date, rooms, assignments: realAssignments });
+    const { rooms: deskOnlyRooms, assignments: deskOnlyAssignments } = buildDeskOnlyReport(desk, rowsByDesk[desk.id] || []);
+    downloadDeskAssignmentPdf({ desk, date, rooms: deskOnlyRooms, assignments: deskOnlyAssignments });
+  };
+
+  // "Submit All": parses and saves all three desks' files in one shot, then
+  // immediately generates and downloads all three desks' PDFs from that
+  // SAME combined data — computed directly here rather than waiting for the
+  // next render's useMemo, so the files reflect exactly what was just
+  // submitted. Because every desk's rows are known at once, this is the one
+  // path where a provider's alternateDeskIds are actually honored, so
+  // overflow across desks comes out right (see handleDownloadDesk above for
+  // why the plain per-desk Submit/Download never does this).
+  const handleSubmitAll = (rowsByDeskForAll) => {
+    const next = { ...rowsByDesk, ...rowsByDeskForAll };
+    setRowsByDeskLocal(next);
+    saveDayRows(date, next).catch((err) => {
+      console.error('Failed to save uploaded rows to Firestore:', err);
+      setFirestoreStatus('error');
+    });
+
+    const combined = Object.values(next).flat();
+    const { dayEntries: matchedEntries, unmatched } = deriveDayEntries(combined, providers);
+    const { pseudoProviders, pseudoDayEntries } = buildUnmatchedProviderEntries(unmatched, desks);
+    const { assignments: allAssignments } = generateDailyAssignments({
+      desks,
+      rooms,
+      providers: [...providers, ...pseudoProviders],
+      dayEntries: [...matchedEntries, ...pseudoDayEntries],
+      roomBlocks: [],
+      date
+    });
+    const realAll = allAssignments.filter((a) => !a.providerId.startsWith('unmatched-'));
+
+    for (const desk of desks) {
+      downloadDeskAssignmentPdf({ desk, date, rooms, assignments: realAll });
+    }
   };
 
   return (
@@ -167,7 +263,7 @@ export default function App() {
 
       {tab === 'assign' && (
         <>
-          <UploadFlow desks={desks} onDeskSubmit={handleDeskSubmit} />
+          <UploadFlow desks={desks} onDeskSubmit={handleDeskSubmit} onSubmitAll={handleSubmitAll} />
 
           {warnings.length > 0 && <WarningList warnings={warnings} />}
 
