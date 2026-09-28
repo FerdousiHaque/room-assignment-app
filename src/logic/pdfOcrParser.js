@@ -120,6 +120,35 @@ function findColumnHeaders(words, pageHeight, names) {
   return found;
 }
 
+/**
+ * "10/28/2026" or "10/28/26" -> "2026-10-28" (ISO), or null if `text` isn't
+ * shaped like a US-format date. Deliberately a standalone copy of
+ * pdfParser.js's parseUsDateToIso rather than a static import of it — this
+ * module is lazy-loaded specifically so a text-based PDF never pulls it in,
+ * and pdfParser.js is the one that lazy-loads THIS module, so importing
+ * back from here would just be needless indirection for one tiny helper.
+ */
+function parseUsDateToIso(text) {
+  if (!text) return null;
+  const m = text.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!m) return null;
+  let [, mo, da, yr] = m.map((s, i) => (i === 0 ? s : parseInt(s, 10)));
+  if (yr < 100) yr += 2000;
+  if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  return `${yr}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+}
+
+/** Finds the schedule's own printed date (e.g. "19 Desk A - 10/28/2026") among page 1's header-band OCR words. */
+function extractScheduleDateFromWords(words, pageHeight) {
+  const headerCutoff = pageHeight * 0.15;
+  for (const w of words) {
+    if (w.bbox.y0 >= headerCutoff) continue;
+    const iso = parseUsDateToIso(w.text);
+    if (iso) return iso;
+  }
+  return null;
+}
+
 /** Scans the canvas for thin, near-full-width horizontal gray divider lines — the "bar/straight line" that separates each visit. Returns [[startY,endY], ...]. */
 function detectDividerLines(ctx, width, height) {
   const x0 = DIVIDER_X_MARGIN;
@@ -307,7 +336,7 @@ function extractSummaryFields(words, summaryTop, columnHeaders) {
  * @param {File} file
  * @param {string} deskId
  * @param {{ debug?: boolean }} [opts] debug: true logs each detected block's classification to the console — useful when tuning against a new real export.
- * @returns {Promise<Array>} rows shaped like { deskId, time, provider, patient, mrn, videoFlag }, compatible with pdfParser.js's deriveDayEntries.
+ * @returns {Promise<{ rows: Array, scheduleDate: string|null }>} rows shaped like { deskId, time, provider, patient, mrn, videoFlag }, compatible with pdfParser.js's deriveDayEntries, plus the date printed on the schedule itself (ISO, or null if page 1's header didn't have one) — e.g. "19 Desk A - 10/28/2026" -> "2026-10-28".
  */
 export async function parseDeskScheduleFileOcr(file, deskId, opts = {}) {
   const { pdfjsLib, createWorker } = await loadDeps();
@@ -316,6 +345,7 @@ export async function parseDeskScheduleFileOcr(file, deskId, opts = {}) {
 
   const worker = await createWorker('eng');
   const rows = [];
+  let scheduleDate = null;
 
   try {
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
@@ -324,6 +354,10 @@ export async function parseDeskScheduleFileOcr(file, deskId, opts = {}) {
 
       const { data: ocrData } = await worker.recognize(canvas);
       const words = (ocrData.words || []).filter((w) => w.text && w.text.trim());
+
+      if (pageNum === 1) {
+        scheduleDate = extractScheduleDateFromWords(words, canvas.height);
+      }
 
       const iconHeaderBox = findIconHeaderBox(words, canvas.height);
       const columnHeaders = findColumnHeaders(words, canvas.height, ['Time', 'Patient', 'MRN', 'Visit Type']);
@@ -396,5 +430,5 @@ export async function parseDeskScheduleFileOcr(file, deskId, opts = {}) {
     await worker.terminate();
   }
 
-  return rows.filter((r) => r.provider); // a row with no readable provider name isn't usable
+  return { rows: rows.filter((r) => r.provider), scheduleDate }; // a row with no readable provider name isn't usable
 }

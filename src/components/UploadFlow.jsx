@@ -4,11 +4,12 @@ import { parseDeskScheduleFileAuto } from '../logic/pdfParser.js';
 /**
  * Each desk gets its own independent file input + Submit button — there is
  * no shared/global submit step. Submitting a desk parses only that desk's
- * file and reports just that desk's rows up to the parent via
- * onDeskSubmit(deskId, rows); the parent merges it into whatever the other
- * desks have already submitted. Every desk's button stays usable at all
- * times, so a desk can be re-uploaded and re-submitted on its own (e.g. a
- * corrected PDF) without touching the other two desks' data.
+ * file and reports just that desk's rows AND the date printed on the
+ * schedule itself up to the parent via onDeskSubmit(deskId, rows,
+ * scheduleDate); the parent merges it into whatever the other desks have
+ * already submitted. Every desk's button stays usable at all times, so a
+ * desk can be re-uploaded and re-submitted on its own (e.g. a corrected
+ * PDF) without touching the other two desks' data.
  *
  * A single desk's own Submit/Download never considers another desk's rooms
  * (see App.jsx's buildDeskOnlyReport) — only "Submit All" below does, since
@@ -35,11 +36,14 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     // pdfParser.js's parseDeskScheduleFileAuto. The OCR path is slower
     // (rendering + OCR-ing every page), so this can take a while longer
     // for those files; the button already shows "Processing…" either way.
-    const rows = await parseDeskScheduleFileAuto(file, desk.id);
+    // scheduleDate is the date actually printed on the schedule itself
+    // (e.g. "19 Desk A - 10/28/2026"), not today's date — the export uses
+    // it instead of assuming the upload happened on the day it's for.
+    const { rows, scheduleDate } = await parseDeskScheduleFileAuto(file, desk.id);
     if (rows.length === 0) {
       throw new Error('No rows were extracted from that PDF, even after trying OCR. Its layout may not match what this parser expects — check the header/column names and icon column line up with pdfParser.js / pdfOcrParser.js.');
     }
-    return rows;
+    return { rows, scheduleDate };
   };
 
   const handleSubmitDesk = async (desk) => {
@@ -48,9 +52,9 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     setErrorsByDesk((prev) => ({ ...prev, [desk.id]: null }));
     setSubmittingDeskId(desk.id);
     try {
-      const rows = await parseDeskFile(desk, file);
-      setSubmittedByDesk((prev) => ({ ...prev, [desk.id]: { fileName: file.name, rowCount: rows.length } }));
-      onDeskSubmit(desk.id, rows);
+      const { rows, scheduleDate } = await parseDeskFile(desk, file);
+      setSubmittedByDesk((prev) => ({ ...prev, [desk.id]: { fileName: file.name, rowCount: rows.length, scheduleDate } }));
+      onDeskSubmit(desk.id, rows, scheduleDate);
     } catch (err) {
       setErrorsByDesk((prev) => ({ ...prev, [desk.id]: `Couldn't read that PDF: ${err.message}` }));
     } finally {
@@ -74,13 +78,15 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
         desks.map(async (desk) => [desk, await parseDeskFile(desk, pendingFiles[desk.id])])
       );
       const rowsByDeskForAll = {};
+      const scheduleDatesByDesk = {};
       const nextSubmitted = {};
-      for (const [desk, rows] of rowsByDeskEntries) {
+      for (const [desk, { rows, scheduleDate }] of rowsByDeskEntries) {
         rowsByDeskForAll[desk.id] = rows;
-        nextSubmitted[desk.id] = { fileName: pendingFiles[desk.id].name, rowCount: rows.length };
+        scheduleDatesByDesk[desk.id] = scheduleDate;
+        nextSubmitted[desk.id] = { fileName: pendingFiles[desk.id].name, rowCount: rows.length, scheduleDate };
       }
       setSubmittedByDesk((prev) => ({ ...prev, ...nextSubmitted }));
-      onSubmitAll(rowsByDeskForAll);
+      onSubmitAll(rowsByDeskForAll, scheduleDatesByDesk);
     } catch (err) {
       setAllError(`Couldn't process all three files: ${err.message}`);
     } finally {
@@ -124,6 +130,9 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
               {submitted && (
                 <span className="upload-file">
                   Loaded {submitted.fileName} ({submitted.rowCount} rows)
+                  {submitted.scheduleDate
+                    ? ` — schedule date: ${submitted.scheduleDate}`
+                    : ' — no date found on the schedule itself; the export will fall back to today’s date'}
                 </span>
               )}
               {errorsByDesk[desk.id] && <p className="upload-error">{errorsByDesk[desk.id]}</p>}

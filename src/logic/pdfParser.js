@@ -59,10 +59,28 @@ function classifyHeader(headerText) {
   return norm; // unknown column — kept under its own literal name, not discarded
 }
 
+/**
+ * "10/28/2026" or "10/28/26" -> "2026-10-28" (ISO), or null if `text` isn't
+ * shaped like a US-format date. Shared by both parsers (this file's own
+ * text-layer reader, and pdfOcrParser.js's OCR reader) to pull the actual
+ * schedule date — e.g. "19 Desk A - 10/28/2026" — off the page itself,
+ * rather than assuming the file is always for today.
+ */
+export function parseUsDateToIso(text) {
+  if (!text) return null;
+  const m = text.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+  if (!m) return null;
+  let [, mo, da, yr] = m.map((s, i) => (i === 0 ? s : parseInt(s, 10)));
+  if (yr < 100) yr += 2000;
+  if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  return `${yr}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+}
+
 async function extractLines(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const lines = [];
+  let scheduleDate = null;
 
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
@@ -71,6 +89,14 @@ async function extractLines(file) {
     const byY = new Map();
     for (const item of content.items) {
       if (!item.str || !item.str.trim()) continue;
+      // The page's own header ("19 Desk A - 10/28/2026") carries the
+      // schedule's real date — only checked on page 1, and only until
+      // found, so a date-shaped patient MRN or similar further down the
+      // page can't ever override it.
+      if (pageNum === 1 && !scheduleDate) {
+        const iso = parseUsDateToIso(item.str.trim());
+        if (iso) scheduleDate = iso;
+      }
       const y = Math.round(item.transform[5]);
       // Merge items within a few px of each other vertically (handles
       // slight baseline jitter within what's visually the same row).
@@ -87,7 +113,7 @@ async function extractLines(file) {
     }
   }
 
-  return lines;
+  return { lines, scheduleDate };
 }
 
 function linesToRecords(lines) {
@@ -127,12 +153,12 @@ function linesToRecords(lines) {
 /**
  * @param {File} file
  * @param {string} deskId  which desk this file's rows belong to
- * @returns {Promise<Array>} rows like { deskId, time, provider, patient, ...anyOtherColumns }
+ * @returns {Promise<{ rows: Array, scheduleDate: string|null }>} rows like { deskId, time, provider, patient, ...anyOtherColumns }, plus the date printed on the schedule itself (ISO, or null if none was found on page 1)
  */
 export async function parseDeskScheduleFile(file, deskId) {
-  const lines = await extractLines(file);
+  const { lines, scheduleDate } = await extractLines(file);
   const records = linesToRecords(lines);
-  return records.map((r) => ({ deskId, ...r }));
+  return { rows: records.map((r) => ({ deskId, ...r })), scheduleDate };
 }
 
 /**
@@ -146,10 +172,12 @@ export async function parseDeskScheduleFile(file, deskId) {
  * The OCR path is lazy-loaded (see pdfOcrParser.js's loadDeps) so its
  * dependencies (tesseract.js, pdfjs-dist) are only pulled in when a file
  * actually needs them.
+ *
+ * @returns {Promise<{ rows: Array, scheduleDate: string|null }>}
  */
 export async function parseDeskScheduleFileAuto(file, deskId) {
-  const textRows = await parseDeskScheduleFile(file, deskId);
-  if (textRows.length > 0) return textRows;
+  const textResult = await parseDeskScheduleFile(file, deskId);
+  if (textResult.rows.length > 0) return textResult;
 
   let ocrModule;
   try {

@@ -33,9 +33,13 @@ import {
 // instantly while the first Firestore snapshot is still loading.
 // Desks stay static from seed.js — there's no UI for editing them.
 
-// No date picker is shown (see request to remove it) — exports are named
-// from today's date automatically. If a future version derives the date
-// from the imported schedule itself, this is the place to swap it in.
+// No date picker is shown (see request to remove it). `date` below still
+// drives where uploads are stored in Firestore (today's date) and is the
+// fallback used on export when a schedule's own date couldn't be read —
+// but each desk's actual EXPORT uses the date printed on that desk's own
+// uploaded PDF instead, via scheduleDatesByDesk (see handleDeskSubmit /
+// handleSubmitAll / handleDownloadDesk below), so a schedule uploaded a day
+// late (or early) still exports under the day it's actually for.
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -62,6 +66,16 @@ export default function App() {
   // live, without each browser needing its own re-upload.
   const [rowsByDesk, setRowsByDeskLocal] = useState({});
   const [firestoreStatus, setFirestoreStatus] = useState('connecting'); // 'connecting' | 'ok' | 'error'
+  // deskId -> the date actually printed on that desk's most recently
+  // submitted schedule PDF (ISO 'YYYY-MM-DD'), read off the page itself by
+  // pdfParser.js/pdfOcrParser.js — e.g. "19 Desk A - 10/28/2026". This is
+  // NOT the same as `date` below (which only drives where uploads are
+  // stored in Firestore and stays "today"): this is what gets printed on,
+  // and used to name, that desk's exported PDF, so the export reflects the
+  // day the schedule is actually for rather than the day it was uploaded.
+  // A desk with no successfully-detected date (or not submitted yet) has no
+  // entry here, and its export falls back to `date`.
+  const [scheduleDatesByDesk, setScheduleDatesByDesk] = useState({});
 
   useEffect(() => {
     const unsubProviders = subscribeProviders(seedProviders, (list) => {
@@ -157,9 +171,12 @@ export default function App() {
     [assignments]
   );
 
-  const handleDeskSubmit = (deskId, rows) => {
+  const handleDeskSubmit = (deskId, rows, scheduleDate) => {
     const next = { ...rowsByDesk, [deskId]: rows };
     setRowsByDeskLocal(next);
+    if (scheduleDate) {
+      setScheduleDatesByDesk((prev) => ({ ...prev, [deskId]: scheduleDate }));
+    }
     saveDayRows(date, next).catch((err) => {
       console.error('Failed to save uploaded rows to Firestore:', err);
       setFirestoreStatus('error');
@@ -195,7 +212,13 @@ export default function App() {
 
   const handleDownloadDesk = (desk) => {
     const { rooms: deskOnlyRooms, assignments: deskOnlyAssignments } = buildDeskOnlyReport(desk, rowsByDesk[desk.id] || []);
-    downloadDeskAssignmentPdf({ desk, date, rooms: deskOnlyRooms, assignments: deskOnlyAssignments });
+    // Prefer the date actually printed on this desk's uploaded schedule over
+    // today's date, so the export (both its filename and the date printed
+    // inside it) reflects the day the schedule is for, not the day it
+    // happened to be uploaded. Falls back to today only if no date could be
+    // read off the PDF at all (or nothing's been submitted for this desk).
+    const exportDate = scheduleDatesByDesk[desk.id] || date;
+    downloadDeskAssignmentPdf({ desk, date: exportDate, rooms: deskOnlyRooms, assignments: deskOnlyAssignments });
   };
 
   // "Submit All": parses and saves all three desks' files in one shot, then
@@ -206,9 +229,12 @@ export default function App() {
   // path where a provider's alternateDeskIds are actually honored, so
   // overflow across desks comes out right (see handleDownloadDesk above for
   // why the plain per-desk Submit/Download never does this).
-  const handleSubmitAll = (rowsByDeskForAll) => {
+  const handleSubmitAll = (rowsByDeskForAll, scheduleDatesForAll) => {
     const next = { ...rowsByDesk, ...rowsByDeskForAll };
     setRowsByDeskLocal(next);
+    if (scheduleDatesForAll) {
+      setScheduleDatesByDesk((prev) => ({ ...prev, ...scheduleDatesForAll }));
+    }
     saveDayRows(date, next).catch((err) => {
       console.error('Failed to save uploaded rows to Firestore:', err);
       setFirestoreStatus('error');
@@ -228,7 +254,14 @@ export default function App() {
     const realAll = allAssignments.filter((a) => !a.providerId.startsWith('unmatched-'));
 
     for (const desk of desks) {
-      downloadDeskAssignmentPdf({ desk, date, rooms, assignments: realAll });
+      // Each desk's own export uses the date read off ITS OWN uploaded
+      // schedule (just submitted, via scheduleDatesForAll — not yet reduced
+      // into state at this point in the function, so read from the param
+      // directly) rather than today's date. Falls back to whatever was
+      // previously known for this desk, then today, if this file had no
+      // readable date at all.
+      const exportDate = (scheduleDatesForAll && scheduleDatesForAll[desk.id]) || scheduleDatesByDesk[desk.id] || date;
+      downloadDeskAssignmentPdf({ desk, date: exportDate, rooms, assignments: realAll });
     }
   };
 
