@@ -1,21 +1,22 @@
 /**
  * Generates the output PDF.
  *
- * Exports are per-desk (see downloadDeskAssignmentPdf), one PDF per desk,
- * a single page:
- *  - Page 1: that desk's provider rows for TODAY — one row per provider
- *    whose home desk is this one, room slot columns, "Not Found" where a
- *    room couldn't be assigned. This is what guarantees no provider
- *    disappears from the report, per the never-drop-provider requirement.
- *    This page changes every day, driven by the day's imported schedule.
+ * Exports are per-desk (see downloadDeskAssignmentPdf), one PDF per desk.
+ * The page is the desk's full room grid — every room the desk has, grouped
+ * into halls exactly like the printed floor plan, whether or not anyone is
+ * assigned there today. A room with a provider in it today shows that
+ * provider's name in place of its usual blank/video-capable marker; every
+ * other room still prints (blank, "V" for video-capable, or its permanent
+ * office/utility label) so the page never collapses to a single "no one
+ * scheduled" line just because the day's import didn't match anyone. Any
+ * provider who has NO room today (e.g. nothing was open for them) still
+ * gets a short "not assigned a room" note below the grid — the never-drop-
+ * a-provider guarantee from the old provider-list page, now attached to the
+ * grid instead of replacing it.
  *
- * The static floor-map page (room numbers grouped into halls, showing
- * permanent offices/utility labels/video-capable markers) used to print as
- * a second page here — it's been removed from this export per request.
- * The drawing code (drawFloorMapPage and friends, below) is left in place
- * and still used by the legacy combined export (generateAssignmentPdf),
- * which nothing currently calls, in case the floor-map page needs to come
- * back as its own export later.
+ * A desk with no hall/row/side configured on its rooms falls back to a
+ * plain one-column room list (drawSimpleRoomList) — same idea, just without
+ * the two-column floor-plan layout.
  *
  * generateAssignmentPdf / downloadAssignmentPdf (the original combined,
  * all-desks-in-one-file version) are kept below for reference/reuse — nothing
@@ -47,20 +48,36 @@ export function deskNameForFilename(deskName) {
 export function generateDeskAssignmentPdf({ desk, date, rooms, assignments }) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
   const marginX = 48;
-  const roomById = Object.fromEntries(rooms.map((r) => [r.id, r]));
 
+  // Occupancy is looked up against the FULL assignments list (not just this
+  // desk's own providers) — when "Submit All" ran, a room here may be filled
+  // by a provider whose home desk is elsewhere but overflowed in, and that
+  // should still show up as occupied on this desk's own grid.
+  const deskRooms = rooms.filter((r) => r.deskId === desk.id);
+  const occupancy = buildRoomOccupancy(deskRooms, assignments);
+
+  // Only this desk's own providers count for the "not assigned a room"
+  // note below the grid — a provider who belongs to a different desk isn't
+  // this desk's report's problem to flag.
   const deskAssignments = assignments.filter((a) => a.homeDeskId === desk.id);
 
-  drawProviderSummaryPage(doc, {
-    title: `${desk.name} — Provider Assignment Report`,
-    date,
-    assignments: deskAssignments,
-    roomById,
-    marginX,
-    showDeskColumn: false
-  });
+  drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignments, marginX });
 
   return doc;
+}
+
+/** roomId -> { providerName, isOverflow } for every room in `deskRooms` that has someone in it today, scanning every assignment's room slots (not just ones whose home desk is this one — see the comment above). */
+function buildRoomOccupancy(deskRooms, assignments) {
+  const deskRoomIds = new Set(deskRooms.map((r) => r.id));
+  const occupancy = new Map();
+  for (const a of assignments) {
+    for (const slot of a.roomSlots || []) {
+      if (slot.roomId && deskRoomIds.has(slot.roomId)) {
+        occupancy.set(slot.roomId, { providerName: a.providerName, isOverflow: slot.isOverflow });
+      }
+    }
+  }
+  return occupancy;
 }
 
 export function downloadDeskAssignmentPdf({ desk, date, rooms, assignments }) {
@@ -157,6 +174,191 @@ function formatSlot(slot, roomById) {
   if (!slot.roomId) return 'Not Found';
   const code = roomById[slot.roomId]?.code || slot.roomId;
   return slot.isOverflow ? `${code}*` : code;
+}
+
+// ---------- Per-desk room grid (current default export page) ----------
+// Same hall/row/side floor-plan layout as drawFloorMapPage below, but each
+// exam room's cell shows today's assigned provider (if any) instead of just
+// a blank/video-capable marker, so the page is always the full room list —
+// never a bare "no providers scheduled" line.
+
+/** A room -> what to print in its two cells (room number, label/marker), given who (if anyone) is in it today. */
+function resolveOccupiedCell(room, occupancy) {
+  if (!room) return { code: '', label: '' };
+  if (room.kind === 'office' || room.kind === 'utility') {
+    // Permanent spaces aren't part of the daily assignment pool — always
+    // their fixed label, same as the static floor map.
+    return { code: room.code || '', label: room.label || '' };
+  }
+  const occupant = occupancy.get(room.id);
+  if (occupant) {
+    return { code: room.code || '', label: occupant.isOverflow ? `${occupant.providerName} *` : occupant.providerName };
+  }
+  // Nobody in it today: fall back to the same static marker the floor map
+  // uses ("V" for video-capable, blank otherwise) rather than leaving it
+  // ambiguous whether the room was skipped or genuinely empty.
+  return { code: room.code || '', label: room.videoCapable ? 'V' : '' };
+}
+
+/** Same drawing as drawHallTable, but cells come from resolveOccupiedCell so today's assignments show through. */
+function drawOccupiedHallTable(doc, { hall, hallRooms, occupancy, x, y, width }) {
+  const byRow = new Map();
+  let maxRow = 0;
+  for (const r of hallRooms) {
+    const rowNum = r.row || 0;
+    maxRow = Math.max(maxRow, rowNum);
+    if (!byRow.has(rowNum)) byRow.set(rowNum, {});
+    byRow.get(rowNum)[r.side === 'right' ? 'right' : 'left'] = r;
+  }
+
+  const numW = width * 0.12;
+  const labelW = width * 0.38;
+  const colX = [x, x + numW, x + numW + labelW, x + numW + labelW + numW];
+  const rowH = 26;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.setTextColor(...NAVY);
+  doc.text(hall, x + width / 2, y, { align: 'center' });
+
+  let cursorY = y + 14;
+  doc.setDrawColor(...BORDER);
+  doc.setLineWidth(0.75);
+
+  for (let rowNum = 1; rowNum <= maxRow; rowNum++) {
+    const pair = byRow.get(rowNum) || {};
+    const left = resolveOccupiedCell(pair.left, occupancy);
+    const right = resolveOccupiedCell(pair.right, occupancy);
+
+    doc.rect(colX[0], cursorY, numW, rowH);
+    doc.rect(colX[1], cursorY, labelW, rowH);
+    doc.rect(colX[2], cursorY, numW, rowH);
+    doc.rect(colX[3], cursorY, labelW, rowH);
+
+    doc.setTextColor(...TEXT);
+    const textY = cursorY + rowH / 2 + 3;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text(left.code, colX[0] + 4, textY);
+    doc.text(right.code, colX[2] + 4, textY);
+
+    const labelMaxWidth = labelW - 8;
+    if (left.label) {
+      fitLabelFont(doc, left.label, labelMaxWidth, 8);
+      doc.text(left.label, colX[1] + 4, textY);
+    }
+    if (right.label) {
+      fitLabelFont(doc, right.label, labelMaxWidth, 8);
+      doc.text(right.label, colX[3] + 4, textY);
+    }
+
+    cursorY += rowH;
+  }
+
+  return cursorY;
+}
+
+/** Plain one-column fallback for a desk with no hall/row/side configured — every room still prints, occupied or not. */
+function drawSimpleOccupiedRoomList(doc, { deskRooms, occupancy, marginX, cursorY }) {
+  let y = cursorY;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(0, 0, 0);
+  doc.text('Room', marginX, y);
+  doc.text('Assigned to', marginX + 100, y);
+  y += 8;
+  doc.setDrawColor(0, 0, 0);
+  doc.line(marginX, y, PAGE_RIGHT, y);
+  y += 16;
+  doc.setFont('helvetica', 'normal');
+
+  const sorted = [...deskRooms].sort((a, b) => (a.code || '').localeCompare(b.code || '', undefined, { numeric: true }));
+  for (const room of sorted) {
+    if (y > 740) {
+      doc.addPage();
+      y = 56;
+    }
+    const occupant = occupancy.get(room.id);
+    let value;
+    if (occupant) {
+      value = occupant.isOverflow ? `${occupant.providerName} *` : occupant.providerName;
+    } else if (room.kind === 'office' || room.kind === 'utility') {
+      value = room.label || '—';
+    } else {
+      const tags = [room.hasWindow ? 'window' : null, room.videoCapable ? 'video-capable' : null].filter(Boolean);
+      value = tags.join(', ') || 'Empty';
+    }
+    doc.text(room.code || '—', marginX, y);
+    doc.text(value, marginX + 100, y);
+    y += 18;
+  }
+  return y;
+}
+
+function drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignments, marginX }) {
+  const { order: halls, byHall } = groupRoomsByHall(deskRooms);
+
+  let cursorY = 56;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.setTextColor(...NAVY);
+  doc.text(`Mayo 19 - ${desk.title || desk.name} Desk`, (marginX + PAGE_RIGHT) / 2, cursorY, { align: 'center' });
+  cursorY += 18;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(...TEXT);
+  doc.text(date, (marginX + PAGE_RIGHT) / 2, cursorY, { align: 'center' });
+  cursorY += 26;
+
+  if (halls.length === 0) {
+    cursorY = drawSimpleOccupiedRoomList(doc, { deskRooms, occupancy, marginX, cursorY });
+  } else {
+    const contentWidth = PAGE_RIGHT - marginX;
+    const gap = 24;
+
+    if (halls.length === 2) {
+      const hallWidth = (contentWidth - gap) / 2;
+      const bottom1 = drawOccupiedHallTable(doc, { hall: halls[0], hallRooms: byHall.get(halls[0]), occupancy, x: marginX, y: cursorY, width: hallWidth });
+      const bottom2 = drawOccupiedHallTable(doc, { hall: halls[1], hallRooms: byHall.get(halls[1]), occupancy, x: marginX + hallWidth + gap, y: cursorY, width: hallWidth });
+      cursorY = Math.max(bottom1, bottom2);
+    } else {
+      for (const hallName of halls) {
+        if (cursorY > 700) {
+          doc.addPage();
+          cursorY = 56;
+        }
+        cursorY = drawOccupiedHallTable(doc, { hall: hallName, hallRooms: byHall.get(hallName), occupancy, x: marginX, y: cursorY, width: contentWidth }) + 24;
+      }
+    }
+  }
+
+  // Never-drop-a-provider guarantee: anyone from this desk who didn't get
+  // every room slot they needed today still shows up here, even though the
+  // grid above only has room for who's actually IN a room.
+  const notPlaced = deskAssignments.filter((a) => (a.roomSlots || []).some((slot) => !slot.roomId));
+  if (notPlaced.length > 0) {
+    cursorY += 12;
+    if (cursorY > 700) {
+      doc.addPage();
+      cursorY = 56;
+    }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10.5);
+    doc.setTextColor(...TEXT);
+    doc.text('Not assigned a room today:', marginX, cursorY);
+    cursorY += 16;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9.5);
+    for (const a of notPlaced) {
+      if (cursorY > 740) {
+        doc.addPage();
+        cursorY = 56;
+      }
+      doc.text(`• ${a.providerName} (${a.session})`, marginX, cursorY);
+      cursorY += 14;
+    }
+  }
 }
 
 // ---------- Static floor-map page (page 2 of each desk's export) ----------
