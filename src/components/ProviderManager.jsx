@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog.jsx';
 
 const emptyDraft = {
@@ -52,6 +52,18 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
   // Id of the provider awaiting delete confirmation, or null when the
   // confirm popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  // Column sort, toggled by clicking a sortable header: column is null (the
+  // table's natural/insertion order) or 'name' / 'desk'; clicking the active
+  // column flips 'asc' -> 'desc' -> back to the natural order.
+  const [sort, setSort] = useState({ column: null, direction: 'asc' });
+  const toggleSort = (column) => {
+    setSort((prev) => {
+      if (prev.column !== column) return { column, direction: 'asc' };
+      if (prev.direction === 'asc') return { column, direction: 'desc' };
+      return { column: null, direction: 'asc' };
+    });
+  };
+  const sortIcon = (column) => (sort.column !== column ? '⇅' : sort.direction === 'asc' ? '▲' : '▼');
 
   const roomsForDesk = (deskId) => rooms.filter((r) => r.deskId === deskId);
 
@@ -137,6 +149,23 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
 
   const roomCode = (roomId) => rooms.find((r) => r.id === roomId)?.code;
   const pendingDeleteProvider = providers.find((p) => p.id === pendingDeleteId);
+  const deskName = (deskId) => desks.find((d) => d.id === deskId)?.name || '';
+
+  const sortedProviders = useMemo(() => {
+    const list = [...providers];
+    if (sort.column === 'name') {
+      list.sort((a, b) => {
+        const cmp = (a.name || '').localeCompare(b.name || '', undefined, { numeric: true, sensitivity: 'base' });
+        return sort.direction === 'asc' ? cmp : -cmp;
+      });
+    } else if (sort.column === 'desk') {
+      list.sort((a, b) => {
+        const cmp = deskName(a.homeDeskId).localeCompare(deskName(b.homeDeskId), undefined, { numeric: true, sensitivity: 'base' });
+        return sort.direction === 'asc' ? cmp : -cmp;
+      });
+    }
+    return list;
+  }, [providers, sort, desks]);
 
   return (
     <section className="provider-manager">
@@ -145,8 +174,28 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
       <table className="provider-table">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>Default desk</th>
+            <th
+              className="sortable-th"
+              onClick={() => toggleSort('name')}
+              title="Sort by name"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('name'); } }}
+            >
+              Name
+              <span className={`sort-icon ${sort.column === 'name' ? 'active' : ''}`}>{sortIcon('name')}</span>
+            </th>
+            <th
+              className="sortable-th"
+              onClick={() => toggleSort('desk')}
+              title="Sort by default desk"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('desk'); } }}
+            >
+              Default desk
+              <span className={`sort-icon ${sort.column === 'desk' ? 'active' : ''}`}>{sortIcon('desk')}</span>
+            </th>
             <th># rooms</th>
             <th>Primary room</th>
             <th>2nd room</th>
@@ -160,7 +209,7 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
           </tr>
         </thead>
         <tbody>
-          {providers.map((p) => (
+          {sortedProviders.map((p) => (
             <tr key={p.id}>
               <td>{p.name}</td>
               <td>{desks.find((d) => d.id === p.homeDeskId)?.name || '—'}</td>

@@ -26,10 +26,18 @@ export default function RoomManager({ rooms, desks, onChange }) {
   // Id of the room awaiting delete confirmation, or null when the confirm
   // popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
-  // Room-code sort, toggled by clicking the "Room code" header: null (the
-  // default desk/hall/row grouping below) -> 'asc' -> 'desc' -> back to null.
-  const [codeSort, setCodeSort] = useState(null);
-  const toggleCodeSort = () => setCodeSort((prev) => (prev === null ? 'asc' : prev === 'asc' ? 'desc' : null));
+  // Column sort, toggled by clicking a sortable header: column is null (the
+  // default desk/hall/row grouping below) or 'code' / 'desk'; clicking the
+  // active column flips 'asc' -> 'desc' -> back to the default grouping.
+  const [sort, setSort] = useState({ column: null, direction: 'asc' });
+  const toggleSort = (column) => {
+    setSort((prev) => {
+      if (prev.column !== column) return { column, direction: 'asc' };
+      if (prev.direction === 'asc') return { column, direction: 'desc' };
+      return { column: null, direction: 'asc' };
+    });
+  };
+  const sortIcon = (column) => (sort.column !== column ? '⇅' : sort.direction === 'asc' ? '▲' : '▼');
 
   const resetDraft = () => {
     setDraft(emptyDraft);
@@ -121,19 +129,26 @@ export default function RoomManager({ rooms, desks, onChange }) {
     return r.videoCapable ? 'Video capable' : '—';
   };
 
+  const deskName = (deskId) => desks.find((d) => d.id === deskId)?.name || '';
+
   const sortedRooms = useMemo(() => {
     const list = [...rooms];
-    if (codeSort) {
+    if (sort.column === 'code') {
       list.sort((a, b) => {
         // numeric:true so "9E" sorts before "10E" instead of after it.
         const cmp = (a.code || '').localeCompare(b.code || '', undefined, { numeric: true, sensitivity: 'base' });
-        return codeSort === 'asc' ? cmp : -cmp;
+        return sort.direction === 'asc' ? cmp : -cmp;
+      });
+    } else if (sort.column === 'desk') {
+      list.sort((a, b) => {
+        const cmp = deskName(a.deskId).localeCompare(deskName(b.deskId), undefined, { numeric: true, sensitivity: 'base' });
+        return sort.direction === 'asc' ? cmp : -cmp;
       });
     } else {
       list.sort((a, b) => a.deskId.localeCompare(b.deskId) || (a.hall || '').localeCompare(b.hall || '') || (a.row || 0) - (b.row || 0));
     }
     return list;
-  }, [rooms, codeSort]);
+  }, [rooms, sort, desks]);
 
   return (
     <section className="provider-manager">
@@ -147,18 +162,26 @@ export default function RoomManager({ rooms, desks, onChange }) {
           <tr>
             <th
               className="sortable-th"
-              onClick={toggleCodeSort}
+              onClick={() => toggleSort('code')}
               title="Sort by room code"
               role="button"
               tabIndex={0}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleCodeSort(); } }}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('code'); } }}
             >
               Room code
-              <span className={`sort-icon ${codeSort ? 'active' : ''}`}>
-                {codeSort === 'asc' ? '▲' : codeSort === 'desc' ? '▼' : '⇅'}
-              </span>
+              <span className={`sort-icon ${sort.column === 'code' ? 'active' : ''}`}>{sortIcon('code')}</span>
             </th>
-            <th>Desk</th>
+            <th
+              className="sortable-th"
+              onClick={() => toggleSort('desk')}
+              title="Sort by desk"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('desk'); } }}
+            >
+              Desk
+              <span className={`sort-icon ${sort.column === 'desk' ? 'active' : ''}`}>{sortIcon('desk')}</span>
+            </th>
             <th>Kind</th>
             <th>Hall</th>
             <th>Window</th>
