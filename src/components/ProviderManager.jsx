@@ -10,7 +10,17 @@ const emptyDraft = {
   windowPreference: 'none',
   alternateDeskIds: [],
   alternateRoomCodesText: '', // raw comma-separated text as typed; parsed to alternateRoomCodes on save
-  hasOfficeOnFloor: false
+  hasOfficeOnFloor: false,
+  // Fixed room: when true, this provider must always get their primary (and
+  // second, if they take 2) preferred room — if it's unavailable that day
+  // they show as "Not Found" rather than being placed in, or overflowed to,
+  // any other room. See assignmentEngine.js's fixed-room reservation pass.
+  fixedRoom: false,
+  // Type: 'Any' (default), 'Doctor', 'Fellow', or 'Nurse'. Only affects
+  // assignment order — Nurses are placed last, after every Doctor, Fellow,
+  // and Any-type provider everywhere has already been placed (including
+  // their overflow). See assignmentEngine.js's priority tiers.
+  type: 'Any'
 };
 
 // "23E, 68W,  70E" -> ["23E", "68W", "70E"]
@@ -58,7 +68,9 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
       windowPreference: provider.windowPreference,
       alternateDeskIds: provider.alternateDeskIds || [],
       alternateRoomCodesText: (provider.alternateRoomCodes || []).join(', '),
-      hasOfficeOnFloor: Boolean(provider.hasOfficeOnFloor)
+      hasOfficeOnFloor: Boolean(provider.hasOfficeOnFloor),
+      fixedRoom: Boolean(provider.fixedRoom),
+      type: provider.type || 'Any'
     });
     setEditingId(provider.id);
   };
@@ -131,6 +143,8 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
             <th>Alt desks</th>
             <th>Alt desk rooms</th>
             <th>Office on floor</th>
+            <th>Fixed room</th>
+            <th>Type</th>
             <th></th>
           </tr>
         </thead>
@@ -151,6 +165,8 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
               </td>
               <td>{(p.alternateRoomCodes || []).join(', ') || '—'}</td>
               <td>{p.hasOfficeOnFloor ? 'Yes' : 'No'}</td>
+              <td>{p.fixedRoom ? 'Yes' : 'No'}</td>
+              <td>{p.type || 'Any'}</td>
               <td className="row-actions">
                 <button type="button" onClick={() => startEdit(p)}>Edit</button>
                 <button type="button" onClick={() => handleDelete(p.id)}>Delete</button>
@@ -259,6 +275,28 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
                 </label>
               ))}
           </fieldset>
+          <label>
+            <span>Fixed room</span>
+            <select
+              value={draft.fixedRoom ? 'yes' : 'no'}
+              onChange={(e) => setDraft((d) => ({ ...d, fixedRoom: e.target.value === 'yes' }))}
+            >
+              <option value="no">No</option>
+              <option value="yes">Yes</option>
+            </select>
+          </label>
+          <label>
+            <span>Type</span>
+            <select
+              value={draft.type}
+              onChange={(e) => setDraft((d) => ({ ...d, type: e.target.value }))}
+            >
+              <option value="Any">Any</option>
+              <option value="Doctor">Doctor</option>
+              <option value="Fellow">Fellow</option>
+              <option value="Nurse">Nurse</option>
+            </select>
+          </label>
         </div>
         {error && <p className="upload-error">{error}</p>}
         <div className="provider-form-actions">

@@ -1,24 +1,21 @@
 /**
  * Generates the output PDF.
  *
- * Exports are per-desk (see downloadDeskAssignmentPdf), one PDF per desk:
+ * Exports are per-desk (see downloadDeskAssignmentPdf), one PDF per desk,
+ * a single page:
  *  - Page 1: that desk's provider rows for TODAY — one row per provider
  *    whose home desk is this one, room slot columns, "Not Found" where a
  *    room couldn't be assigned. This is what guarantees no provider
  *    disappears from the report, per the never-drop-provider requirement.
  *    This page changes every day, driven by the day's imported schedule.
- *  - Page 2: the desk's STATIC floor map — room numbers grouped into halls,
- *    each showing either a permanent office's name, a utility space's
- *    label (Hallway, Restroom, etc), or "V" for a video-capable pool room
- *    (blank for a plain pool room). This page is intentionally the SAME
- *    every time, regardless of the day's assignments — it's a floor-plan
- *    reference, not a daily report (confirmed with the real sample export
- *    and the person's own description of how it's used). It's built from
- *    each room's `hall`/`row`/`side`/`kind`/`label` fields (see
- *    src/data/seed.js's Desk A rooms for a fully worked example matching
- *    the real "Mayo 19 - East A Desk" sample). A desk with no `hall` set
- *    on any of its rooms (Desk B / Desk West, until configured) falls back
- *    to a simple one-column room list instead.
+ *
+ * The static floor-map page (room numbers grouped into halls, showing
+ * permanent offices/utility labels/video-capable markers) used to print as
+ * a second page here — it's been removed from this export per request.
+ * The drawing code (drawFloorMapPage and friends, below) is left in place
+ * and still used by the legacy combined export (generateAssignmentPdf),
+ * which nothing currently calls, in case the floor-map page needs to come
+ * back as its own export later.
  *
  * generateAssignmentPdf / downloadAssignmentPdf (the original combined,
  * all-desks-in-one-file version) are kept below for reference/reuse — nothing
@@ -62,9 +59,6 @@ export function generateDeskAssignmentPdf({ desk, date, rooms, assignments }) {
     marginX,
     showDeskColumn: false
   });
-
-  doc.addPage();
-  drawFloorMapPage(doc, { desk, rooms, marginX });
 
   return doc;
 }

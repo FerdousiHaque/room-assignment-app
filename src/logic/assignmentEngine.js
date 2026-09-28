@@ -49,6 +49,24 @@
  *    Pseudo ("unmatched name") providers are exempt from this — per an
  *    earlier requirement they silently fill whatever's open and are
  *    simply dropped (no warning, no Not Found entry) if nothing's open.
+ * 13. NEW — provider.fixedRoom: when true, this provider's room(s) are
+ *    reserved up front, before anything else is assigned, from their
+ *    primaryPreferredRoomId (slot 0) and secondPreferredRoomId (slot 1,
+ *    if preferredNumberOfRooms is 2) — no scoring, no substitution. If a
+ *    fixed room isn't set or isn't available that session (blocked or
+ *    already reserved by another fixed-room provider), that slot shows
+ *    "Not Found"; it is NEVER filled by a different room and NEVER sent
+ *    through overflow to another desk. This reservation happens before
+ *    any non-fixed provider is placed, so a fixed-room provider's room
+ *    can't be taken by someone else first.
+ * 14. NEW — provider.type ('Doctor' | 'Fellow' | 'Any' | 'Nurse', default
+ *    'Any'): assignment happens in priority tiers, in that order — every
+ *    Doctor (across all desks, including their overflow) is placed before
+ *    any Fellow is placed, then every Fellow before any Any-type provider,
+ *    then every Any-type provider before any Nurse. So a Nurse only gets a
+ *    room once every Doctor/Fellow/Any-type provider everywhere already
+ *    has theirs (or has been overflowed/failed to find one). fixedRoom
+ *    providers are reserved before all tiers (see #13) regardless of type.
  * ------------------------------------------------------------------
  */
 
@@ -94,7 +112,8 @@ export function computeBlockedSlots(roomBlocks, date) {
  * @param {Array} providers   [{ id, name, homeDeskId, preferredNumberOfRooms,
  *                                windowPreference, primaryPreferredRoomId,
  *                                secondPreferredRoomId, alternateDeskIds,
- *                                alternateRoomCodes, hasOfficeOnFloor, suppressWarnings }]
+ *                                alternateRoomCodes, hasOfficeOnFloor, suppressWarnings,
+ *                                fixedRoom, type }]
  * @param {Array} dayEntries  [{ providerId, isWorking, patientCount, session, hasVideoVisit? }]
  *                             hasVideoVisit is the ONLY source of whether a video-capable
  *                             room is needed — it comes from that day's import, never from
@@ -230,60 +249,60 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   };
 
   const assignments = [];
+  const deskById = Object.fromEntries(desks.map((d) => [d.id, d]));
 
-  // Phase 1 — home desk.
+  // ---- Phase 0 — fixed-room reservation (rule #13) -----------------------
+  // Runs before anything else, so a fixed-room provider's room can never be
+  // taken by another provider placed earlier in the normal flow. No scoring,
+  // no substitution, no overflow: either the named room is free, or the
+  // slot is "Not Found".
+  const fixedEntries = [];
+  const normalEntries = [];
   for (const desk of desks) {
     for (const entry of entriesByHomeDesk[desk.id]) {
-      const need = entry.provider.preferredNumberOfRooms || 1;
-      const slots = placeSlots(desk.id, entry, need, 0, false);
-      assignments.push(makeAssignment(entry, desk, slots));
+      if (entry.provider.fixedRoom) fixedEntries.push(entry);
+      else normalEntries.push(entry);
     }
   }
 
-  // Phase 2 — overflow: for any assignment with missing (null) slots, try
-  // the provider's alternate desks, ranked by fewest current patients, to
-  // fill just the still-missing count.
-  const deskById = Object.fromEntries(desks.map((d) => [d.id, d]));
+  for (const entry of fixedEntries) {
+    const need = entry.provider.preferredNumberOfRooms || 1;
+    const homeDesk = deskById[entry.provider.homeDeskId];
+    const slots = [];
+    for (let i = 0; i < need; i++) {
+      const preferredRoomId = i === 0
+        ? entry.provider.primaryPreferredRoomId
+        : i === 1
+        ? entry.provider.secondPreferredRoomId
+        : null;
+      if (preferredRoomId && canFit(preferredRoomId, entry.session)) {
+        occupy(preferredRoomId, entry.session, entry.providerId);
+        const roomDeskId = roomState[preferredRoomId]?.room.deskId ?? homeDesk.id;
+        slots.push({ roomId: preferredRoomId, deskId: roomDeskId, isOverflow: false });
+      } else {
+        slots.push({ roomId: null, deskId: null, isOverflow: false });
+        if (!entry.provider.suppressWarnings) {
+          const which = i === 0 ? 'primary' : 'second';
+          warnings.push(
+            preferredRoomId
+              ? `${entry.provider.name} has a fixed room, but their ${which} room isn't available today — shown as "Not Found" (fixed-room providers are never moved to a different room).`
+              : `${entry.provider.name} is marked "Fixed room" but has no ${which} preferred room set — shown as "Not Found".`
+          );
+        }
+      }
+    }
+    assignments.push(makeAssignment(entry, homeDesk, slots));
+  }
+
   const patientLoad = (deskId) =>
     assignments
       .filter((a) => a.homeDeskId === deskId || a.roomSlots.some((s) => s.deskId === deskId))
       .reduce((sum, a) => sum + (a.patientCount || 0), 0);
 
-  for (const assignment of assignments) {
-    const missingCount = assignment.roomSlots.filter((s) => s.roomId === null).length;
-    if (missingCount === 0) continue;
-
-    const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
-    const eligible = (entry.provider.alternateDeskIds || [])
-      .map((id) => deskById[id])
-      .filter(Boolean)
-      .sort((a, b) => patientLoad(a.id) - patientLoad(b.id));
-
-    let remaining = missingCount;
-    const filledSoFar = assignment.roomSlots.length - missingCount;
-
-    for (const desk of eligible) {
-      if (remaining === 0) break;
-      const newSlots = placeSlots(desk.id, entry, remaining, filledSoFar, true);
-      // Splice the newly-filled slots into the first remaining null positions.
-      let cursor = 0;
-      for (let i = 0; i < assignment.roomSlots.length && cursor < newSlots.length; i++) {
-        if (assignment.roomSlots[i].roomId === null) {
-          assignment.roomSlots[i] = newSlots[cursor];
-          if (newSlots[cursor].roomId !== null) remaining -= 1;
-          cursor += 1;
-        }
-      }
-    }
-
-    if (remaining > 0 && !entry.provider.suppressWarnings) {
-      warnings.push(
-        `${entry.provider.name}: ${remaining} of ${assignment.roomSlots.length} preferred room(s) could not be assigned (shown as "Not Found") — needs manual review.`
-      );
-    }
-
-    // Video-capable validation, checked after overflow has had its chance.
-    if (entry.needsVideoCapable) {
+  const checkVideoCapable = (tierAssignments) => {
+    for (const assignment of tierAssignments) {
+      const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+      if (!entry.needsVideoCapable) continue;
       const gotVideoRoom = assignment.roomSlots.some(
         (s) => s.roomId && roomState[s.roomId].room.videoCapable
       );
@@ -293,23 +312,82 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         );
       }
     }
-  }
+  };
 
-  // Video-capable validation for providers who were fully placed at home
-  // desk (the loop above only re-checks ones that went through overflow).
-  for (const assignment of assignments) {
-    const missingCount = assignment.roomSlots.filter((s) => s.roomId === null).length;
-    if (missingCount > 0) continue; // already checked above
-    const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
-    if (!entry.needsVideoCapable) continue;
-    const gotVideoRoom = assignment.roomSlots.some(
-      (s) => s.roomId && roomState[s.roomId].room.videoCapable
-    );
-    if (!gotVideoRoom && !entry.provider.suppressWarnings) {
-      warnings.push(
-        `${entry.provider.name} has a video/virtual visit today and no office on the floor, but wasn't assigned a video-capable room — needs manual review.`
-      );
+  // Video-capable validation for fixed-room providers too — a fixed room
+  // is still expected to satisfy the day's video-visit need if it applies.
+  checkVideoCapable(assignments);
+
+  // ---- Phases 1+2 — priority tiers (rule #14) -----------------------------
+  // Doctor, then Fellow, then Any (default/unset), then Nurse. Each tier is
+  // fully placed (home desk, then its own overflow) before the next tier
+  // starts, so a later tier only ever sees rooms the earlier tiers left.
+  const TYPE_PRIORITY = ['Doctor', 'Fellow', 'Any', 'Nurse'];
+  const typeRank = (type) => {
+    const idx = TYPE_PRIORITY.indexOf(type || 'Any');
+    return idx === -1 ? TYPE_PRIORITY.indexOf('Any') : idx;
+  };
+
+  const runOverflowAndValidate = (tierAssignments) => {
+    for (const assignment of tierAssignments) {
+      const missingCount = assignment.roomSlots.filter((s) => s.roomId === null).length;
+      if (missingCount === 0) continue;
+
+      const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+      const eligible = (entry.provider.alternateDeskIds || [])
+        .map((id) => deskById[id])
+        .filter(Boolean)
+        .sort((a, b) => patientLoad(a.id) - patientLoad(b.id));
+
+      let remaining = missingCount;
+      const filledSoFar = assignment.roomSlots.length - missingCount;
+
+      for (const desk of eligible) {
+        if (remaining === 0) break;
+        const newSlots = placeSlots(desk.id, entry, remaining, filledSoFar, true);
+        // Splice the newly-filled slots into the first remaining null positions.
+        let cursor = 0;
+        for (let i = 0; i < assignment.roomSlots.length && cursor < newSlots.length; i++) {
+          if (assignment.roomSlots[i].roomId === null) {
+            assignment.roomSlots[i] = newSlots[cursor];
+            if (newSlots[cursor].roomId !== null) remaining -= 1;
+            cursor += 1;
+          }
+        }
+      }
+
+      if (remaining > 0 && !entry.provider.suppressWarnings) {
+        warnings.push(
+          `${entry.provider.name}: ${remaining} of ${assignment.roomSlots.length} preferred room(s) could not be assigned (shown as "Not Found") — needs manual review.`
+        );
+      }
     }
+
+    // Video-capable validation for every assignment in this tier, whether
+    // it went through overflow or was fully placed at the home desk.
+    checkVideoCapable(tierAssignments);
+  };
+
+  for (let tier = 0; tier < TYPE_PRIORITY.length; tier++) {
+    const tierEntries = normalEntries.filter((e) => typeRank(e.provider.type) === tier);
+    if (tierEntries.length === 0) continue;
+
+    const tierEntriesByDesk = {};
+    for (const d of desks) tierEntriesByDesk[d.id] = [];
+    for (const e of tierEntries) tierEntriesByDesk[e.provider.homeDeskId].push(e);
+
+    const tierAssignments = [];
+    for (const desk of desks) {
+      for (const entry of tierEntriesByDesk[desk.id]) {
+        const need = entry.provider.preferredNumberOfRooms || 1;
+        const slots = placeSlots(desk.id, entry, need, 0, false);
+        const assignment = makeAssignment(entry, desk, slots);
+        assignments.push(assignment);
+        tierAssignments.push(assignment);
+      }
+    }
+
+    runOverflowAndValidate(tierAssignments);
   }
 
   return { assignments, warnings };
