@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ConfirmDialog from './ConfirmDialog.jsx';
 
 const emptyDraft = {
   code: '',
@@ -22,6 +23,9 @@ const emptyDraft = {
 export default function RoomManager({ rooms, desks, onChange }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [editingId, setEditingId] = useState(null);
+  // Id of the room awaiting delete confirmation, or null when the confirm
+  // popup is closed — Delete never removes anything by itself.
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
   const resetDraft = () => {
     setDraft(emptyDraft);
@@ -92,10 +96,18 @@ export default function RoomManager({ rooms, desks, onChange }) {
     resetDraft();
   };
 
-  const handleDelete = (id) => {
+  const requestDelete = (id) => setPendingDeleteId(id);
+
+  const confirmDelete = () => {
+    const id = pendingDeleteId;
     onChange(rooms.filter((r) => r.id !== id));
     if (editingId === id) resetDraft();
+    setPendingDeleteId(null);
   };
+
+  const cancelDelete = () => setPendingDeleteId(null);
+
+  const pendingDeleteRoom = rooms.find((r) => r.id === pendingDeleteId);
 
   const countForDesk = (deskId) => rooms.filter((r) => r.deskId === deskId && (!r.kind || r.kind === 'exam')).length;
 
@@ -137,7 +149,7 @@ export default function RoomManager({ rooms, desks, onChange }) {
                 <td>{resolvedLabel(r)}</td>
                 <td className="row-actions">
                   <button type="button" onClick={() => startEdit(r)}>Edit</button>
-                  <button type="button" onClick={() => handleDelete(r.id)}>Delete</button>
+                  <button type="button" onClick={() => requestDelete(r.id)}>Delete</button>
                 </td>
               </tr>
             ))}
@@ -233,6 +245,14 @@ export default function RoomManager({ rooms, desks, onChange }) {
           {editingId && <button type="button" onClick={resetDraft}>Cancel</button>}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        title="Delete this room?"
+        message={pendingDeleteRoom ? `Are you sure you want to delete room "${pendingDeleteRoom.code || pendingDeleteRoom.label || pendingDeleteRoom.id}"? This can't be undone.` : ''}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </section>
   );
 }

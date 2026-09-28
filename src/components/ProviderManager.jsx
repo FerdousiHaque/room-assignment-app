@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import ConfirmDialog from './ConfirmDialog.jsx';
 
 const emptyDraft = {
   firstName: '',
@@ -48,6 +49,9 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState(null);
+  // Id of the provider awaiting delete confirmation, or null when the
+  // confirm popup is closed — Delete never removes anything by itself.
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
   const roomsForDesk = (deskId) => rooms.filter((r) => r.deskId === deskId);
 
@@ -120,12 +124,19 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
     resetDraft();
   };
 
-  const handleDelete = (id) => {
+  const requestDelete = (id) => setPendingDeleteId(id);
+
+  const confirmDelete = () => {
+    const id = pendingDeleteId;
     onChange(providers.filter((p) => p.id !== id));
     if (editingId === id) resetDraft();
+    setPendingDeleteId(null);
   };
 
+  const cancelDelete = () => setPendingDeleteId(null);
+
   const roomCode = (roomId) => rooms.find((r) => r.id === roomId)?.code;
+  const pendingDeleteProvider = providers.find((p) => p.id === pendingDeleteId);
 
   return (
     <section className="provider-manager">
@@ -169,7 +180,7 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
               <td>{p.type || 'Any'}</td>
               <td className="row-actions">
                 <button type="button" onClick={() => startEdit(p)}>Edit</button>
-                <button type="button" onClick={() => handleDelete(p.id)}>Delete</button>
+                <button type="button" onClick={() => requestDelete(p.id)}>Delete</button>
               </td>
             </tr>
           ))}
@@ -304,6 +315,14 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
           {editingId && <button type="button" onClick={resetDraft}>Cancel</button>}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingDeleteId !== null}
+        title="Delete this provider?"
+        message={pendingDeleteProvider ? `Are you sure you want to delete "${pendingDeleteProvider.name}"? This can't be undone.` : ''}
+        onConfirm={confirmDelete}
+        onCancel={cancelDelete}
+      />
     </section>
   );
 }

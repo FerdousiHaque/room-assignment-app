@@ -546,3 +546,61 @@ body {
   color: #a12622;
   border: 1px solid #f4c7c3;
 }
+
+/* Delete confirmation popup */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 34, 48, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.confirm-dialog {
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 22px 24px;
+  max-width: 360px;
+  width: calc(100% - 40px);
+  box-shadow: 0 12px 32px rgba(28, 34, 48, 0.25);
+}
+
+.confirm-dialog h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.confirm-dialog p {
+  margin: 0 0 18px;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.confirm-dialog-actions button {
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.confirm-yes {
+  border: none;
+  background: var(--overflow);
+  color: #fff;
+}
+
+.confirm-no {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+}
