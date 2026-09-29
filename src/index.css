@@ -479,17 +479,6 @@ body {
   padding: 0 4px;
 }
 
-.provider-form-grid select[multiple] {
-  height: auto;
-  min-height: 84px;
-}
-
-.field-hint {
-  font-size: 11px;
-  color: var(--ink-soft);
-  font-weight: 400;
-}
-
 /* Inline edit row: the same .provider-form fields, but rendered inside a
    <tr><td colSpan=...> right below the row being edited (see
    ProviderManager.jsx / RoomManager.jsx) instead of scrolled down to the

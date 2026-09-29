@@ -104,9 +104,16 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
     setEditingId(provider.id);
   };
 
-  const handleAlternateDesksChange = (e) => {
-    const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
-    setDraft((d) => ({ ...d, alternateDeskIds: selected }));
+  const toggleAlternateDesk = (deskId) => {
+    setDraft((d) => {
+      const has = d.alternateDeskIds.includes(deskId);
+      return {
+        ...d,
+        alternateDeskIds: has
+          ? d.alternateDeskIds.filter((id) => id !== deskId)
+          : [...d.alternateDeskIds, deskId]
+      };
+    });
   };
 
   const handleSave = () => {
@@ -306,17 +313,21 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
           onChange={(e) => setDraft((d) => ({ ...d, alternateRoomCodesText: e.target.value }))}
         />
       </label>
-      <label>
-        <span>Alternate desks (overflow-eligible)</span>
-        <select multiple value={draft.alternateDeskIds} onChange={handleAlternateDesksChange}>
-          {desks
-            .filter((d) => d.id !== draft.homeDeskId)
-            .map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
-        </select>
-        <small className="field-hint">Hold Ctrl/Cmd (or Cmd on Mac) to select more than one.</small>
-      </label>
+      <fieldset>
+        <legend>Alternate desks (overflow-eligible)</legend>
+        {desks
+          .filter((d) => d.id !== draft.homeDeskId)
+          .map((d) => (
+            <label key={d.id} className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={draft.alternateDeskIds.includes(d.id)}
+                onChange={() => toggleAlternateDesk(d.id)}
+              />
+              {d.name}
+            </label>
+          ))}
+      </fieldset>
       <label className="checkbox-label">
         <input
           type="checkbox"
