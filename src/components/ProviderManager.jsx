@@ -33,6 +33,30 @@ function parseRoomCodes(text) {
     .filter(Boolean);
 }
 
+// Numeric-aware ascending compare on room code, e.g. "9E" < "12E" — mirrors
+// RoomManager.jsx's byCodeAsc, used everywhere a room dropdown is built so
+// every list of rooms is always shown in the same ascending order.
+function byCodeAsc(a, b) {
+  return (a.code || '').localeCompare(b.code || '', undefined, { numeric: true, sensitivity: 'base' });
+}
+
+// "22E" -> { num: 22, suffix: "E" }; null if unparseable.
+function parseRoomCode(code) {
+  const m = /^(\d+)([A-Za-z]*)$/.exec((code || '').trim());
+  if (!m) return null;
+  return { num: Number(m[1]), suffix: m[2] };
+}
+
+// Two rooms are a valid "two rooms beside each other" pair only when both
+// codes parse, share the same letter suffix, and are exactly 2 apart (which
+// also guarantees both odd or both even) — e.g. 22E/24E, 63E/65E, 30/32.
+function roomsAdjacent(codeA, codeB) {
+  const a = parseRoomCode(codeA);
+  const b = parseRoomCode(codeB);
+  if (!a || !b) return false;
+  return a.suffix === b.suffix && Math.abs(a.num - b.num) === 2;
+}
+
 /**
  * In-app add/edit table for provider config. Currently backed by local
  * state passed in as `providers` + `onChange`. To wire to Firestore:
@@ -76,8 +100,11 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
 
   // Used to restrict the Primary/Second preferred room dropdowns to the
   // provider's own selected desk, so they can't pick a room from a desk
-  // they don't work at.
-  const roomsForDesk = (deskId) => rooms.filter((r) => r.deskId === deskId);
+  // they don't work at. Only exam rooms are ever assignable (office/utility
+  // rooms are floor-map-only — see assignmentEngine.js), so those are left
+  // out here too; always returned in ascending room-code order.
+  const roomsForDesk = (deskId) =>
+    rooms.filter((r) => r.deskId === deskId && (!r.kind || r.kind === 'exam')).sort(byCodeAsc);
 
   const resetDraft = () => {
     setDraft(emptyDraft);
@@ -184,6 +211,11 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
         const cmp = deskName(a.homeDeskId).localeCompare(deskName(b.homeDeskId), undefined, { numeric: true, sensitivity: 'base' });
         return sort.direction === 'asc' ? cmp : -cmp;
       });
+    } else if (sort.column === 'type') {
+      list.sort((a, b) => {
+        const cmp = (a.type || 'Any').localeCompare(b.type || 'Any', undefined, { numeric: true, sensitivity: 'base' });
+        return sort.direction === 'asc' ? cmp : -cmp;
+      });
     } else {
       list.sort(byLastNameAsc);
     }
@@ -208,20 +240,31 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
         <select
           value={draft.homeDeskId}
           onChange={(e) =>
-            setDraft((d) => ({
-              ...d,
-              homeDeskId: e.target.value,
+            setDraft((d) => {
+              const nextRooms = roomsForDesk(e.target.value);
+              const keepPrimary = nextRooms.some((r) => r.id === d.primaryPreferredRoomId)
+                ? d.primaryPreferredRoomId
+                : '';
+              const primaryCode = keepPrimary ? nextRooms.find((r) => r.id === keepPrimary)?.code : null;
               // Primary/second preferred room are always filtered to the
               // selected desk (see the two dropdowns below) — if the desk
               // changes, drop any previous pick that no longer belongs to
               // it rather than silently keeping a room from the old desk.
-              primaryPreferredRoomId: roomsForDesk(e.target.value).some((r) => r.id === d.primaryPreferredRoomId)
-                ? d.primaryPreferredRoomId
-                : '',
-              secondPreferredRoomId: roomsForDesk(e.target.value).some((r) => r.id === d.secondPreferredRoomId)
-                ? d.secondPreferredRoomId
-                : ''
-            }))
+              // Second also has to stay adjacent to whatever primary ends
+              // up being kept (see roomsAdjacent) or it gets dropped too.
+              const keepSecond =
+                keepPrimary &&
+                nextRooms.some((r) => r.id === d.secondPreferredRoomId) &&
+                roomsAdjacent(primaryCode, nextRooms.find((r) => r.id === d.secondPreferredRoomId)?.code)
+                  ? d.secondPreferredRoomId
+                  : '';
+              return {
+                ...d,
+                homeDeskId: e.target.value,
+                primaryPreferredRoomId: keepPrimary,
+                secondPreferredRoomId: keepSecond
+              };
+            })
           }
         >
           <option value="">Select…</option>
@@ -244,17 +287,24 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
         <span>Primary preferred room</span>
         <select
           value={draft.primaryPreferredRoomId}
-          onChange={(e) =>
+          onChange={(e) => {
+            const nextPrimary = e.target.value;
+            const nextPrimaryCode = rooms.find((r) => r.id === nextPrimary)?.code;
+            const secondCode = rooms.find((r) => r.id === draft.secondPreferredRoomId)?.code;
             setDraft((d) => ({
               ...d,
-              primaryPreferredRoomId: e.target.value,
-              // Primary and second preferred room must always be two
-              // different rooms — if this pick matches the current second
-              // room, clear the second room rather than leaving a
-              // duplicate selected.
-              secondPreferredRoomId: e.target.value && e.target.value === d.secondPreferredRoomId ? '' : d.secondPreferredRoomId
-            }))
-          }
+              primaryPreferredRoomId: nextPrimary,
+              // A two-room provider's second room has to be adjacent to
+              // whichever room ends up as primary (see roomsAdjacent) — if
+              // the current second pick no longer qualifies (including a
+              // straight duplicate), clear it rather than leave a stale or
+              // invalid pick selected.
+              secondPreferredRoomId:
+                nextPrimary && d.secondPreferredRoomId && roomsAdjacent(nextPrimaryCode, secondCode)
+                  ? d.secondPreferredRoomId
+                  : ''
+            }));
+          }}
         >
           <option value="">None</option>
           {roomsForDesk(draft.homeDeskId)
@@ -271,15 +321,18 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
           onChange={(e) =>
             setDraft((d) => ({
               ...d,
-              secondPreferredRoomId: e.target.value,
-              primaryPreferredRoomId: e.target.value && e.target.value === d.primaryPreferredRoomId ? '' : d.primaryPreferredRoomId
+              secondPreferredRoomId: e.target.value
             }))
           }
-          disabled={draft.preferredNumberOfRooms != 2}
+          disabled={draft.preferredNumberOfRooms != 2 || !draft.primaryPreferredRoomId}
         >
           <option value="">None</option>
+          {/* Only rooms adjacent to the chosen primary room qualify — a
+              two-room provider must always get two rooms beside each other
+              (same letter suffix, numbers exactly 2 apart). */}
           {roomsForDesk(draft.homeDeskId)
             .filter((r) => r.id !== draft.primaryPreferredRoomId)
+            .filter((r) => roomsAdjacent(r.code, rooms.find((pr) => pr.id === draft.primaryPreferredRoomId)?.code))
             .map((r) => (
               <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
             ))}
@@ -398,7 +451,17 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
             <th>Alt desk rooms</th>
             <th>Office on floor</th>
             <th>Fixed room</th>
-            <th>Type</th>
+            <th
+              className="sortable-th"
+              onClick={() => toggleSort('type')}
+              title="Sort by type"
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSort('type'); } }}
+            >
+              Type
+              <span className={`sort-icon ${sort.column === 'type' ? 'active' : ''}`}>{sortIcon('type')}</span>
+            </th>
             <th></th>
           </tr>
         </thead>

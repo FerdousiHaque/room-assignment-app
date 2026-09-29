@@ -79,15 +79,51 @@
  *    but above everything else (video-capable need, alternateRoomCodes,
  *    window preference), so among whatever rooms are actually free, one
  *    from this list wins out over a merely-adequate room.
- * 16. NEW — a provider's rooms are never split across two different desks.
- *    If a provider needs more than one room and their home desk can't fit
- *    all of them, overflow to an alternateDeskId is only attempted when
- *    NONE of their rooms could be placed at home — and even then, only a
- *    SINGLE alternate desk that can fit every remaining room is used (never
- *    partially filled at one alternate desk and the rest at another). If
- *    the home desk placed some (but not all) of a provider's rooms, the
- *    rest are left "Not Found" rather than sent anywhere else — a partial
- *    placement at home is never topped up with a room at a different desk.
+ * 16. NEW — a provider's rooms are never split across two different desks
+ *    during the normal tiered placement/overflow pass. If a provider needs
+ *    more than one room and their home desk can't fit all of them, overflow
+ *    to an alternateDeskId is only attempted when NONE of their rooms could
+ *    be placed at home — and even then, only a SINGLE alternate desk that
+ *    can fit every remaining room is used (never partially filled at one
+ *    alternate desk and the rest at another). If the home desk placed some
+ *    (but not all) of a provider's rooms, the rest are left unfilled here
+ *    rather than sent anywhere else during this pass — see #18, which can
+ *    still pick them up as a last resort.
+ * 17. NEW — provider.preferredNumberOfRooms === 2: the two rooms must
+ *    always be "beside each other" — same letter suffix and room numbers
+ *    exactly 2 apart (so always both odd or both even), e.g. 22E/24E,
+ *    63E/65E, 30/32 (see parseRoomCode/roomsAdjacent). Slot 1 (the second
+ *    room) is only ever assigned a room adjacent to whatever room slot 0
+ *    ACTUALLY received — not just the provider's stored
+ *    secondPreferredRoomId. If slot 0 couldn't be placed, slot 1 is left
+ *    unfilled too rather than assigning an unpaired room. Enforced both
+ *    here and in the Providers form (ProviderManager.jsx), where the
+ *    Second Preferred Room dropdown only offers rooms adjacent to whichever
+ *    Primary Preferred Room is currently selected.
+ * 18. NEW — fallback fill (last resort, runs once after every priority tier
+ *    has been placed): no working, non-fixed provider is left with a
+ *    missing room while a genuinely usable room exists anywhere. This pass
+ *    searches every desk (home desk first, then alternateDeskIds by
+ *    patient load, then every other desk by patient load) for each
+ *    still-missing slot, respecting the #17 adjacency rule. If nothing is
+ *    open, it may evict an already-placed Nurse (never a Doctor, Fellow,
+ *    Any-type provider, or a reserved fixed-room provider) from a room that
+ *    would fit, then makes a single attempt (no further eviction) to
+ *    relocate that nurse elsewhere — if that also fails, the nurse is left
+ *    "Not Found" instead, never re-attempted further, so this can never
+ *    loop. Runs in priority order (Doctor → Fellow → Any → Nurse, pseudo/
+ *    unmatched entries last of all and never allowed to evict anyone),
+ *    highest priority first. A provider with 1-2 patients that day is
+ *    scored as an especially good candidate for sharing an already
+ *    half-filled room (see scoreRoom), rather than opening a fresh one.
+ * 19. NEW — cross-check / backtracking: after the #18 fallback sweep runs
+ *    once, it's re-run a few more times (bounded, stops as soon as a pass
+ *    makes no further change) against the true, current room state. A
+ *    placement made late in one pass — a provider shifted to another desk,
+ *    a nurse relocated after eviction — can open up a room an
+ *    earlier-processed provider in that same pass had already given up on;
+ *    this catches that instead of leaving it for manual review. This is the
+ *    final check before the results are considered ready to export.
  * ------------------------------------------------------------------
  */
 
@@ -95,6 +131,24 @@ const NOON = 12 * 60;
 
 function timeRangeOverlaps(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && bStart < aEnd;
+}
+
+// "22E" -> { num: 22, suffix: "E" }; null if unparseable.
+function parseRoomCode(code) {
+  const m = /^(\d+)([A-Za-z]*)$/.exec((code || '').trim());
+  if (!m) return null;
+  return { num: Number(m[1]), suffix: m[2] };
+}
+
+// Two rooms count as "beside each other" (rule #17) only when both codes
+// parse, share the same letter suffix, and are exactly 2 apart — e.g.
+// 22E/24E, 63E/65E, 30/32 (a difference of 2 also guarantees both odd or
+// both even).
+function roomsAdjacent(codeA, codeB) {
+  const a = parseRoomCode(codeA);
+  const b = parseRoomCode(codeB);
+  if (!a || !b) return false;
+  return a.suffix === b.suffix && Math.abs(a.num - b.num) === 2;
 }
 
 /**
@@ -142,10 +196,24 @@ export function computeBlockedSlots(roomBlocks, date) {
  *                             a static provider field.
  * @param {Array} roomBlocks  [{ id, roomId, date, startMinutes, endMinutes, reason }]
  * @param {string} date       'YYYY-MM-DD', used to resolve which blocks apply today
- * @returns {{ assignments: Array, warnings: Array }}
+ * @returns {{ assignments: Array, warnings: Array, logs: Array }}
  */
 export function generateDailyAssignments({ desks, rooms, providers, dayEntries, roomBlocks = [], date }) {
   const warnings = [];
+  // Real, human-readable narration of what the engine actually did, in the
+  // order it happened — see rule #18's doc comment and the UI's Logs box
+  // (App.jsx). Ephemeral by nature: this is just a plain array returned
+  // fresh on every run, nothing is persisted.
+  const logs = [];
+  // Tracks which desks have already gotten a "Working on <desk> providers…"
+  // log line, so each desk only logs once no matter how many phases/tiers
+  // touch it.
+  const loggedDesks = new Set();
+  const logDeskStart = (desk) => {
+    if (!desk || loggedDesks.has(desk.id)) return;
+    loggedDesks.add(desk.id);
+    logs.push(`Working on ${desk.name} providers…`);
+  };
   const providerById = Object.fromEntries(providers.map((p) => [p.id, p]));
   const blockedSlots = computeBlockedSlots(roomBlocks, date);
 
@@ -249,35 +317,67 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     if (entry.needsVideoCapable && s.room.videoCapable) score += 5;
     if ((entry.provider.alternateRoomCodes || []).includes(s.room.code)) score += 5;
     if (entry.provider.windowPreference === 'prefers' && s.room.hasWindow) score += 2;
-    if (s.amOccupant !== null || s.pmOccupant !== null) score += 1; // reuse half-filled rooms
+    // Reuse a half-filled room (AM/PM room-sharing) rather than opening a
+    // fresh one. A provider with only 1-2 patients that day is a light,
+    // likely-half-day case and a good sharing candidate — weighted higher
+    // so they gravitate to an already-half-filled room and leave whole,
+    // empty rooms open for busier providers.
+    if (s.amOccupant !== null || s.pmOccupant !== null) {
+      score += entry.patientCount != null && entry.patientCount <= 2 ? 4 : 1;
+    }
     return score;
   };
 
-  const pickRoom = (deskId, entry, preferredRoomId, alreadyPicked) => {
-    const candidates = (roomsByDesk[deskId] || []).filter((id) => canFit(id, entry.session));
+  // `requireAdjacentToCode`, when set, hard-filters candidates to only
+  // rooms adjacent (rule #17) to that room code, before any scoring runs —
+  // used for a two-room provider's second room, anchored to whatever room
+  // the first one actually got.
+  const pickRoom = (deskId, entry, preferredRoomId, alreadyPicked, requireAdjacentToCode = null) => {
+    let candidates = (roomsByDesk[deskId] || []).filter((id) => canFit(id, entry.session));
+    if (requireAdjacentToCode) {
+      candidates = candidates.filter((id) => roomsAdjacent(roomState[id].room.code, requireAdjacentToCode));
+    }
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => scoreRoom(b, entry, preferredRoomId, alreadyPicked) - scoreRoom(a, entry, preferredRoomId, alreadyPicked));
     const best = candidates[0];
     return scoreRoom(best, entry, preferredRoomId, alreadyPicked) === -Infinity ? null : best;
   };
 
+  // Slot 0 = primary preferred room, slot 1 = second preferred room.
+  const slotPreferredRoomId = (entry, slotIndex) =>
+    slotIndex === 0 ? entry.provider.primaryPreferredRoomId : slotIndex === 1 ? entry.provider.secondPreferredRoomId : null;
+
   /**
    * Attempts to fill `count` room slots for `entry` at `deskId`, starting
    * at `slotOffset` (so slot preferences line up correctly when this is
    * called again during overflow for just the still-missing slots).
+   * `anchorCode`, when `slotOffset` starts past slot 0 (i.e. slot 0 was
+   * already placed by an earlier call, possibly at a different desk),
+   * carries that room's code so slot 1 can still be checked for adjacency
+   * (rule #17) against it.
    * Returns an array of { roomId: string|null, deskId, isOverflow }.
    */
-  const placeSlots = (deskId, entry, count, slotOffset, isOverflow) => {
+  const placeSlots = (deskId, entry, count, slotOffset, isOverflow, anchorCode = null) => {
     const results = [];
     const pickedSoFar = [];
+    const need = entry.provider.preferredNumberOfRooms || 1;
     for (let i = 0; i < count; i++) {
       const slotIndex = slotOffset + i;
-      const preferredRoomId = slotIndex === 0
-        ? entry.provider.primaryPreferredRoomId
-        : slotIndex === 1
-        ? entry.provider.secondPreferredRoomId
-        : null;
-      const roomId = pickRoom(deskId, entry, preferredRoomId, pickedSoFar);
+      const preferredRoomId = slotPreferredRoomId(entry, slotIndex);
+
+      let requireAdjacentToCode = null;
+      if (need === 2 && slotIndex === 1) {
+        requireAdjacentToCode = pickedSoFar.length > 0 ? roomState[pickedSoFar[0]]?.room.code : anchorCode;
+        if (!requireAdjacentToCode) {
+          // Slot 0 hasn't actually been secured (in this call or before
+          // it) — there's nothing to pair slot 1 with, so leave it unfilled
+          // rather than assigning an unpaired room (rule #17).
+          results.push({ roomId: null, deskId: null, isOverflow: false });
+          continue;
+        }
+      }
+
+      const roomId = pickRoom(deskId, entry, preferredRoomId, pickedSoFar, requireAdjacentToCode);
       if (roomId) {
         occupy(roomId, entry.session, entry.providerId);
         pickedSoFar.push(roomId);
@@ -309,9 +409,11 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     }
   }
 
+  if (fixedEntries.length > 0) logs.push('Reserving fixed rooms…');
   for (const entry of fixedEntries) {
     const need = entry.provider.preferredNumberOfRooms || 1;
     const homeDesk = deskById[entry.provider.homeDeskId];
+    logDeskStart(homeDesk);
     const slots = [];
     for (let i = 0; i < need; i++) {
       const preferredRoomId = i === 0
@@ -358,9 +460,10 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     }
   };
 
-  // Video-capable validation for fixed-room providers too — a fixed room
-  // is still expected to satisfy the day's video-visit need if it applies.
-  checkVideoCapable(assignments);
+  // Video-capable validation is deferred to a single final pass over every
+  // assignment (fixed, tiered, and fallback-filled) at the very end, rather
+  // than being checked once here and again per tier — see the bottom of
+  // this function.
 
   // ---- Phases 1+2 — priority tiers (rule #14) -----------------------------
   // Doctor, then Fellow, then Any (default/unset), then Nurse. Each tier is
@@ -379,18 +482,13 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
       const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
 
-      // Rule #16: never split a provider's rooms across desks. If the home
-      // desk placed SOME but not all of their needed rooms, the rest stay
-      // "Not Found" rather than overflowing elsewhere — overflow is only
-      // attempted when the home desk placed NONE of them.
-      if (missingCount < assignment.roomSlots.length) {
-        if (!entry.provider.suppressWarnings) {
-          warnings.push(
-            `${entry.provider.name}: ${missingCount} of ${assignment.roomSlots.length} preferred room(s) could not be assigned at their home desk (shown as "Not Found") — a provider's rooms are never split across desks, so the rest were not sent to an alternate desk.`
-          );
-        }
-        continue;
-      }
+      // Rule #16: never split a provider's rooms across desks during this
+      // automatic pass. If the home desk placed SOME but not all of their
+      // needed rooms, the rest stay unfilled here rather than overflowing
+      // elsewhere — overflow is only attempted when the home desk placed
+      // NONE of them. (Rule #18's fallback pass, after every tier, can
+      // still pick this up as a last resort.)
+      if (missingCount < assignment.roomSlots.length) continue;
 
       const eligible = (entry.provider.alternateDeskIds || [])
         .map((id) => deskById[id])
@@ -413,6 +511,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
               cursor += 1;
             }
           }
+          logs.push(`Shifting ${entry.provider.name} to ${desk.name}`);
           placed = true;
           break;
         }
@@ -422,17 +521,10 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
           if (s.roomId) release(s.roomId, entry.session);
         }
       }
-
-      if (!placed && !entry.provider.suppressWarnings) {
-        warnings.push(
-          `${entry.provider.name}: ${missingCount} of ${assignment.roomSlots.length} preferred room(s) could not be assigned (shown as "Not Found") — needs manual review.`
-        );
-      }
+      // Not placed here is not necessarily final — rule #18's fallback pass
+      // gets one more, broader attempt after every tier has run; warnings
+      // and video-capable validation are both deferred to the very end.
     }
-
-    // Video-capable validation for every assignment in this tier, whether
-    // it went through overflow or was fully placed at the home desk.
-    checkVideoCapable(tierAssignments);
   };
 
   for (let tier = 0; tier < TYPE_PRIORITY.length; tier++) {
@@ -445,6 +537,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
     const tierAssignments = [];
     for (const desk of desks) {
+      if (tierEntriesByDesk[desk.id].length === 0) continue;
+      logDeskStart(desk);
       for (const entry of tierEntriesByDesk[desk.id]) {
         const need = entry.provider.preferredNumberOfRooms || 1;
         const slots = placeSlots(desk.id, entry, need, 0, false);
@@ -457,7 +551,210 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     runOverflowAndValidate(tierAssignments);
   }
 
-  return { assignments, warnings };
+  // ---- Phase 3 — fallback fill (rule #18) --------------------------------
+  // One more sweep, after every tier has been placed, so no working,
+  // non-fixed provider is left with a missing room while a genuinely usable
+  // room exists anywhere. Runs in priority order; pseudo/unmatched entries
+  // go last and can never evict anyone.
+  const patientLoadForFallback = (deskId) => patientLoad(deskId);
+
+  const deskSearchOrder = (entry) => {
+    const seen = new Set();
+    const ordered = [];
+    const home = deskById[entry.provider.homeDeskId];
+    if (home) {
+      ordered.push(home);
+      seen.add(home.id);
+    }
+    const byLoad = (a, b) => patientLoadForFallback(a.id) - patientLoadForFallback(b.id);
+    (entry.provider.alternateDeskIds || [])
+      .map((id) => deskById[id])
+      .filter(Boolean)
+      .sort(byLoad)
+      .forEach((d) => {
+        if (!seen.has(d.id)) {
+          ordered.push(d);
+          seen.add(d.id);
+        }
+      });
+    desks
+      .filter((d) => !seen.has(d.id))
+      .sort(byLoad)
+      .forEach((d) => {
+        ordered.push(d);
+        seen.add(d.id);
+      });
+    return ordered;
+  };
+
+  // Returns the evictable Nurse (if any) occupying `roomId` during
+  // `neededSession` — never a Doctor/Fellow/Any-type provider, and never a
+  // fixed-room reservation with patients that day.
+  const findEvictableNurse = (roomId, neededSession) => {
+    const s = roomState[roomId];
+    const occupantId =
+      neededSession === 'FULL' ? s.amOccupant || s.pmOccupant : neededSession === 'AM' ? s.amOccupant : s.pmOccupant;
+    if (!occupantId) return null;
+    const occAssignment = assignments.find((a) => a.providerId === occupantId);
+    if (!occAssignment) return null;
+    const occEntry = workingEntries.find((e) => e.providerId === occupantId);
+    if (!occEntry) return null;
+    if ((occEntry.provider.type || 'Any') !== 'Nurse') return null;
+    if (occEntry.provider.fixedRoom && occEntry.patientCount > 0) return null;
+    const slotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+    if (slotIndex === -1) return null;
+    return { providerId: occupantId, assignment: occAssignment, entry: occEntry, slotIndex };
+  };
+
+  // A single, non-recursive attempt to give an evicted nurse a new room for
+  // just the one slot that was freed — no further eviction rights, so this
+  // can never cascade or loop. If it fails, the nurse is simply left "Not
+  // Found" for that slot (picked up by the final warnings sweep below).
+  const relocateEvictedNurse = (hit) => {
+    const nurseEntry = hit.entry;
+    const nurseAssignment = hit.assignment;
+    const need2 = (nurseEntry.provider.preferredNumberOfRooms || 1) === 2;
+    let anchorCode = null;
+    if (need2 && hit.slotIndex === 1) {
+      const slot0RoomId = nurseAssignment.roomSlots[0]?.roomId;
+      if (!slot0RoomId) return; // nothing to pair with — leave unfilled
+      anchorCode = roomState[slot0RoomId]?.room.code || null;
+      if (!anchorCode) return;
+    }
+    for (const desk of deskSearchOrder(nurseEntry)) {
+      const roomId = pickRoom(desk.id, nurseEntry, slotPreferredRoomId(nurseEntry, hit.slotIndex), [], anchorCode);
+      if (roomId) {
+        occupy(roomId, nurseEntry.session, nurseEntry.providerId);
+        nurseAssignment.roomSlots[hit.slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== nurseEntry.provider.homeDeskId };
+        if (desk.id !== nurseEntry.provider.homeDeskId) logs.push(`Shifting ${nurseEntry.provider.name} to ${desk.name}`);
+        return;
+      }
+    }
+  };
+
+  // Runs one full fallback sweep over whatever is missing a room RIGHT NOW
+  // (recomputed fresh each call, not a fixed snapshot) and returns whether
+  // it changed anything. Called in a loop below (rule #19 — cross-check /
+  // backtracking) so a placement made late in one pass (e.g. a provider
+  // shifted off their home desk, freeing it up) can still be picked up by
+  // an earlier-processed provider on a repeat pass, instead of only ever
+  // getting one shot in priority order.
+  const runFallbackPass = () => {
+    const needsFallback = normalEntries
+      .filter((e) => assignments.find((a) => a.providerId === e.providerId)?.roomSlots.some((s) => s.roomId === null))
+      .sort((a, b) => {
+        const aKey = (a.providerId.startsWith('unmatched-') ? 100 : 0) + typeRank(a.provider.type);
+        const bKey = (b.providerId.startsWith('unmatched-') ? 100 : 0) + typeRank(b.provider.type);
+        return aKey - bKey;
+      });
+
+    let changed = false;
+
+    for (const entry of needsFallback) {
+      const assignment = assignments.find((a) => a.providerId === entry.providerId);
+      if (!assignment) continue;
+      const isPseudo = entry.providerId.startsWith('unmatched-');
+      const allowEvict = !isPseudo && (entry.provider.type || 'Any') !== 'Nurse';
+      const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+
+      for (let slotIndex = 0; slotIndex < assignment.roomSlots.length; slotIndex++) {
+        if (assignment.roomSlots[slotIndex].roomId !== null) continue;
+
+        let anchorCode = null;
+        if (need2 && slotIndex === 1) {
+          const slot0RoomId = assignment.roomSlots[0]?.roomId;
+          if (!slot0RoomId) continue; // nothing to pair slot 1 with — leave unfilled
+          anchorCode = roomState[slot0RoomId]?.room.code || null;
+          if (!anchorCode) continue;
+        }
+
+        // First pass: any already-open room, no eviction.
+        let filled = false;
+        for (const desk of deskSearchOrder(entry)) {
+          logDeskStart(desk);
+          const roomId = pickRoom(desk.id, entry, slotPreferredRoomId(entry, slotIndex), [], anchorCode);
+          if (roomId) {
+            occupy(roomId, entry.session, entry.providerId);
+            assignment.roomSlots[slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+            if (desk.id !== entry.provider.homeDeskId) logs.push(`Shifting ${entry.provider.name} to ${desk.name}`);
+            filled = true;
+            changed = true;
+            break;
+          }
+        }
+
+        // Second pass: nothing open anywhere — try bumping a Nurse (never
+        // for a Nurse or pseudo entry itself) out of a room that would fit.
+        if (!filled && allowEvict) {
+          outer: for (const desk of deskSearchOrder(entry)) {
+            const roomIds = (roomsByDesk[desk.id] || []).filter(
+              (id) => !anchorCode || roomsAdjacent(roomState[id].room.code, anchorCode)
+            );
+            for (const roomId of roomIds) {
+              const nurseHit = findEvictableNurse(roomId, entry.session);
+              if (!nurseHit) continue;
+              release(roomId, nurseHit.assignment.session);
+              if (!canFit(roomId, entry.session)) {
+                // Evicting this nurse alone wasn't enough (e.g. the
+                // complementary half-day slot is held by someone else) —
+                // restore them and move on.
+                occupy(roomId, nurseHit.assignment.session, nurseHit.providerId);
+                continue;
+              }
+              occupy(roomId, entry.session, entry.providerId);
+              assignment.roomSlots[slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+              logs.push(`Shifting ${entry.provider.name} to ${desk.name}`);
+              nurseHit.assignment.roomSlots[nurseHit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
+              relocateEvictedNurse(nurseHit);
+              filled = true;
+              changed = true;
+              break outer;
+            }
+          }
+        }
+      }
+    }
+
+    return changed;
+  };
+
+  runFallbackPass();
+
+  // ---- Phase 4 — cross-check / backtracking (rule #19) --------------------
+  // Re-runs the fallback sweep against the FINAL, current room state a few
+  // more times: a placement made late in the first pass (a provider shifted
+  // to another desk, a nurse relocated after eviction) can open up a room
+  // that an earlier-processed provider in that same pass had already given
+  // up on. Bounded to a handful of extra passes — once a pass makes no
+  // further change, everything reachable has been reached, so it stops
+  // rather than looping forever.
+  logs.push('Cross-checking all assignments…');
+  let crossCheckPasses = 0;
+  while (crossCheckPasses < 4 && runFallbackPass()) {
+    crossCheckPasses += 1;
+  }
+
+  logs.push('Finalizing all the providers…');
+
+  // ---- Final sweep — warnings + video-capable validation ------------------
+  // Deferred to one pass over every assignment (fixed, tiered, and
+  // fallback-filled) now that the fallback pass has had its say, instead of
+  // being checked repeatedly across earlier phases.
+  const fixedProviderIds = new Set(fixedEntries.map((e) => e.providerId));
+  for (const assignment of assignments) {
+    if (fixedProviderIds.has(assignment.providerId)) continue; // already warned in Phase 0, if needed
+    const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+    if (!entry || entry.provider.suppressWarnings) continue;
+    const missing = assignment.roomSlots.filter((s) => s.roomId === null).length;
+    if (missing > 0) {
+      warnings.push(
+        `${assignment.providerName}: ${missing} of ${assignment.roomSlots.length} preferred room(s) could not be assigned today (shown as "Not Found") — needs manual review.`
+      );
+    }
+  }
+  checkVideoCapable(assignments);
+
+  return { assignments, warnings, logs };
 }
 
 function makeAssignment(entry, homeDesk, roomSlots) {

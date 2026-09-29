@@ -18,6 +18,7 @@ src/
 │   ├── RoomManager.jsx          # Room CRUD table, inline edit, sort, delete confirm
 │   ├── RoomBlockManager.jsx     # Room blocks — disabled in UI, code intact (see below)
 │   ├── ConfirmDialog.jsx        # Shared yes/no confirm popup (used by delete actions)
+│   ├── LogsPanel.jsx            # Real per-run engine narration, clears on refresh
 │   └── WarningList.jsx          # Surfaces unresolved overflow/video/capacity warnings
 ├── logic/
 │   ├── assignmentEngine.js      # Pure rules engine (no Firebase/PDF calls) — see below
@@ -44,24 +45,55 @@ Runs in this order for a given date:
    `primary/second preferred room` (+10) → `otherPreferredRoomCodes` match
    (+7) → needs video-capable & room has it (+5) → `alternateRoomCodes`
    match (+5) → window preference match (+2) → room already half-filled by
-   a complementary AM/PM provider (+1).
+   a complementary AM/PM provider (+1, or **+4** when this provider has
+   only 1–2 patients that day — a light/likely-half-day case, so it's
+   steered toward an already-shared room, leaving whole empty rooms for
+   busier providers).
 5. **Overflow** — only attempted when the home desk placed **zero** of a
    provider's needed rooms (a partial home-desk placement is never topped
-   up elsewhere). Tries each `alternateDeskIds` entry, lightest patient
-   load first; a desk must fit **every** missing room at once or it's
-   rolled back (`release()`) and the next desk is tried. A provider's
-   rooms are never split across two desks.
-6. **Video-capable validation** — if `dayEntries[].hasVideoVisit` is true
-   and the provider has no `hasOfficeOnFloor`, at least one assigned room
-   should be video-capable (scored, not enforced); unmet → warning.
+   up elsewhere) during this pass. Tries each `alternateDeskIds` entry,
+   lightest patient load first; a desk must fit **every** missing room at
+   once or it's rolled back (`release()`) and the next desk is tried. A
+   provider's rooms are never split across two desks in this pass — but see
+   the fallback-fill pass below, which can still fill an unsplit remainder.
+6. **Two-room adjacency** — a provider with `preferredNumberOfRooms: 2`
+   always gets two rooms "beside each other": same letter suffix, room
+   numbers exactly 2 apart (`22E`/`24E`, `63E`/`65E`, `30`/`32`). The second
+   room is only ever picked adjacent to whichever room the first one
+   *actually* received; if the first couldn't be placed, the second is left
+   unfilled rather than assigned on its own. Enforced here and in the
+   Providers form, where the Second Preferred Room dropdown only offers
+   rooms adjacent to the selected Primary.
+7. **Fallback fill** (last resort, once after every tier) — no working,
+   non-fixed provider is left missing a room while a genuinely open one
+   exists anywhere. Searches every desk (home, then `alternateDeskIds` by
+   patient load, then every other desk by patient load); if nothing's open,
+   may evict an already-placed Nurse (never a Doctor/Fellow/Any-type
+   provider or a reserved fixed-room provider), then makes one attempt (no
+   further eviction) to relocate that nurse elsewhere.
+8. **Cross-check / backtracking** — the fallback-fill pass is re-run a few
+   more times (bounded, stops once a pass changes nothing) against the true
+   final room state, since a late placement in one pass can open up a room
+   an earlier-processed provider had already given up on. This is the last
+   step before results are considered ready to export.
+9. **Video-capable validation** — one final pass: if `dayEntries[].hasVideoVisit`
+   is true and the provider has no `hasOfficeOnFloor`, at least one assigned
+   room should be video-capable (scored, not hard-enforced); unmet → warning.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
-`utility` are floor-map-only); a room has two half-day slots (AM/PM),
+`utility` are floor-map-only, and never offered in the Providers form's
+room dropdowns either — see below); a room has two half-day slots (AM/PM),
 shared by complementary half-day providers; every real matched provider
 always appears in the results (`roomSlots[i].roomId: null` = "Not Found"),
 unmatched PDF names silently fill open rooms or are dropped; a blank/
 whitespace provider name falls back to "Unknown provider"; `type` and
-`suppressWarnings` are per-provider fields (see field list below).
+`suppressWarnings` are per-provider fields (see field list below); a
+fixed-room provider with zero patients that day has their room released
+back into the normal pool instead of reserved, so it's free for anyone.
+Every run also returns a `logs` array — plain narration of what actually
+happened ("Working on Desk A providers…", "Shifting Dr. X to Desk B",
+"Cross-checking all assignments…", "Finalizing all the providers…"),
+shown in the UI's Logs box (see below).
 
 ## UI
 
@@ -70,15 +102,22 @@ whitespace provider name falls back to "Unknown provider"; `type` and
   three together (required for correct cross-desk overflow) and shows a
   progress bar above the button — it appears on any Submit click, animates
   while processing, and settles into a done/error state that stays until
-  the page is reloaded. Each desk board has its own PDF download button.
+  the page is reloaded. A **Logs** box sits between the upload section and
+  the "Needs review" warnings, showing that run's real engine narration
+  (`logs`, see above) — it clears on refresh, nothing is persisted. Each
+  desk board has its own PDF download button.
 - **Providers / Rooms tabs** — table with sortable columns (click a header
-  to toggle asc/desc/default), inline edit (opens the edit form in a row
-  under the one being edited, add form stays at the bottom), delete with a
-  yes/no confirm popup. Providers default-sort by last name ascending,
-  shown as `Last, First`; Rooms default-sort by room code ascending.
-  Primary/Second preferred room dropdowns are filtered to the provider's
-  selected default desk and are mutually exclusive (picking a room in one
-  clears it from the other if duplicated).
+  to toggle asc/desc/default, including Type), inline edit (opens the edit
+  form in a row under the one being edited, add form stays at the bottom),
+  delete with a yes/no confirm popup. Providers default-sort by last name
+  ascending, shown as `Last, First`; Rooms default-sort by room code
+  ascending. Primary/Second preferred room dropdowns only ever list
+  exam-kind rooms at the provider's selected default desk, always in
+  ascending room-code order; they're mutually exclusive (picking a room in
+  one clears it from the other if duplicated), and when
+  `preferredNumberOfRooms` is 2, Second is additionally filtered to only
+  rooms adjacent to whichever room is picked as Primary (disabled until one
+  is picked).
 
 ## Provider fields
 
