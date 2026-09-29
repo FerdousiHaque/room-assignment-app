@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { parseDeskScheduleFileAuto } from '../logic/pdfParser.js';
 
 /**
@@ -27,7 +27,38 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
   // processing finishes — it settles into a done/error state and stays on
   // screen as a record that a submit happened, until the page is reloaded
   // (there's nothing to persist across a refresh; it's plain component state).
-  const [progress, setProgress] = useState(null); // { status: 'processing'|'done'|'error', label: string } | null
+  const [progress, setProgress] = useState(null); // { status: 'processing'|'done'|'error', label: string, pct: number } | null
+  const rampRef = useRef(null);
+
+  // Parsing a PDF (and OCR-ing it, for a rasterized export) has no real
+  // progress events to hook into, so the bar's percentage is simulated: it
+  // climbs toward 90% in slowing steps while the work is actually running,
+  // then jumps straight to 100% the moment that work really finishes — it
+  // never claims "done" before the submit has actually completed.
+  const startProgress = (label) => {
+    if (rampRef.current) clearInterval(rampRef.current);
+    setProgress({ status: 'processing', label, pct: 0 });
+    rampRef.current = setInterval(() => {
+      setProgress((prev) => {
+        if (!prev || prev.status !== 'processing') return prev;
+        const remaining = 90 - prev.pct;
+        const next = Math.min(90, prev.pct + Math.max(1, Math.round(remaining * 0.18)));
+        return { ...prev, pct: next };
+      });
+    }, 140);
+  };
+
+  const finishProgress = (status, label) => {
+    if (rampRef.current) {
+      clearInterval(rampRef.current);
+      rampRef.current = null;
+    }
+    setProgress((prev) => ({ status, label, pct: status === 'error' ? (prev ? prev.pct : 0) : 100 }));
+  };
+
+  useEffect(() => () => {
+    if (rampRef.current) clearInterval(rampRef.current);
+  }, []);
 
   const handleFileChange = (deskId, file) => {
     setPendingFiles((prev) => ({ ...prev, [deskId]: file }));
@@ -57,15 +88,15 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     if (!file) return;
     setErrorsByDesk((prev) => ({ ...prev, [desk.id]: null }));
     setSubmittingDeskId(desk.id);
-    setProgress({ status: 'processing', label: `Processing ${desk.name}…` });
+    startProgress(`Processing ${desk.name}…`);
     try {
       const { rows, scheduleDate } = await parseDeskFile(desk, file);
       setSubmittedByDesk((prev) => ({ ...prev, [desk.id]: { fileName: file.name, rowCount: rows.length, scheduleDate } }));
       onDeskSubmit(desk.id, rows, scheduleDate);
-      setProgress({ status: 'done', label: `${desk.name} submitted` });
+      finishProgress('done', `${desk.name} submitted`);
     } catch (err) {
       setErrorsByDesk((prev) => ({ ...prev, [desk.id]: `Couldn't read that PDF: ${err.message}` }));
-      setProgress({ status: 'error', label: `${desk.name} failed to submit` });
+      finishProgress('error', `${desk.name} failed to submit`);
     } finally {
       setSubmittingDeskId(null);
     }
@@ -78,7 +109,7 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     setAllError(null);
     setErrorsByDesk({});
     setSubmittingDeskId('all');
-    setProgress({ status: 'processing', label: 'Processing all desks…' });
+    startProgress('Processing all desks…');
     try {
       // Parse every desk's file before reporting anything up — a combined,
       // cross-desk report (the whole point of "Submit All") only makes
@@ -97,10 +128,10 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
       }
       setSubmittedByDesk((prev) => ({ ...prev, ...nextSubmitted }));
       onSubmitAll(rowsByDeskForAll, scheduleDatesByDesk);
-      setProgress({ status: 'done', label: 'All desks submitted' });
+      finishProgress('done', 'All desks submitted');
     } catch (err) {
       setAllError(`Couldn't process all three files: ${err.message}`);
-      setProgress({ status: 'error', label: 'Submit All failed' });
+      finishProgress('error', 'Submit All failed');
     } finally {
       setSubmittingDeskId(null);
     }
@@ -155,10 +186,15 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
 
       {progress && (
         <div className={`upload-progress upload-progress-${progress.status}`} role="status">
-          <div className="upload-progress-track">
-            <div className="upload-progress-fill" />
+          <span className="upload-progress-text">{progress.label}</span>
+          <div className="upload-progress-row">
+            <div className="upload-progress-track">
+              <div className="upload-progress-fill" style={{ width: `${progress.pct}%` }} />
+            </div>
+            <span className="upload-progress-pct">
+              {progress.status === 'error' ? 'Failed' : `${progress.pct}%`}
+            </span>
           </div>
-          <span className="upload-progress-label">{progress.label}</span>
         </div>
       )}
 
