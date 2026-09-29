@@ -244,25 +244,45 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
         <span>Primary preferred room</span>
         <select
           value={draft.primaryPreferredRoomId}
-          onChange={(e) => setDraft((d) => ({ ...d, primaryPreferredRoomId: e.target.value }))}
+          onChange={(e) =>
+            setDraft((d) => ({
+              ...d,
+              primaryPreferredRoomId: e.target.value,
+              // Primary and second preferred room must always be two
+              // different rooms — if this pick matches the current second
+              // room, clear the second room rather than leaving a
+              // duplicate selected.
+              secondPreferredRoomId: e.target.value && e.target.value === d.secondPreferredRoomId ? '' : d.secondPreferredRoomId
+            }))
+          }
         >
           <option value="">None</option>
-          {roomsForDesk(draft.homeDeskId).map((r) => (
-            <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
-          ))}
+          {roomsForDesk(draft.homeDeskId)
+            .filter((r) => r.id !== draft.secondPreferredRoomId)
+            .map((r) => (
+              <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
+            ))}
         </select>
       </label>
       <label>
         <span>Second preferred room</span>
         <select
           value={draft.secondPreferredRoomId}
-          onChange={(e) => setDraft((d) => ({ ...d, secondPreferredRoomId: e.target.value }))}
+          onChange={(e) =>
+            setDraft((d) => ({
+              ...d,
+              secondPreferredRoomId: e.target.value,
+              primaryPreferredRoomId: e.target.value && e.target.value === d.primaryPreferredRoomId ? '' : d.primaryPreferredRoomId
+            }))
+          }
           disabled={draft.preferredNumberOfRooms != 2}
         >
           <option value="">None</option>
-          {roomsForDesk(draft.homeDeskId).map((r) => (
-            <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
-          ))}
+          {roomsForDesk(draft.homeDeskId)
+            .filter((r) => r.id !== draft.primaryPreferredRoomId)
+            .map((r) => (
+              <option key={r.id} value={r.id}>{r.code}{r.hasWindow ? ' (window)' : ''}</option>
+            ))}
         </select>
       </label>
       <label>
