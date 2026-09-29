@@ -22,6 +22,12 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
   const [errorsByDesk, setErrorsByDesk] = useState({}); // deskId -> string
   const [submittingDeskId, setSubmittingDeskId] = useState(null); // a single desk id, or 'all'
   const [allError, setAllError] = useState(null);
+  // Progress bar shown above "Submit All": null until the first Submit
+  // (desk or Submit All) is clicked. Once shown, it does NOT auto-hide when
+  // processing finishes — it settles into a done/error state and stays on
+  // screen as a record that a submit happened, until the page is reloaded
+  // (there's nothing to persist across a refresh; it's plain component state).
+  const [progress, setProgress] = useState(null); // { status: 'processing'|'done'|'error', label: string } | null
 
   const handleFileChange = (deskId, file) => {
     setPendingFiles((prev) => ({ ...prev, [deskId]: file }));
@@ -51,12 +57,15 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     if (!file) return;
     setErrorsByDesk((prev) => ({ ...prev, [desk.id]: null }));
     setSubmittingDeskId(desk.id);
+    setProgress({ status: 'processing', label: `Processing ${desk.name}…` });
     try {
       const { rows, scheduleDate } = await parseDeskFile(desk, file);
       setSubmittedByDesk((prev) => ({ ...prev, [desk.id]: { fileName: file.name, rowCount: rows.length, scheduleDate } }));
       onDeskSubmit(desk.id, rows, scheduleDate);
+      setProgress({ status: 'done', label: `${desk.name} submitted` });
     } catch (err) {
       setErrorsByDesk((prev) => ({ ...prev, [desk.id]: `Couldn't read that PDF: ${err.message}` }));
+      setProgress({ status: 'error', label: `${desk.name} failed to submit` });
     } finally {
       setSubmittingDeskId(null);
     }
@@ -69,6 +78,7 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     setAllError(null);
     setErrorsByDesk({});
     setSubmittingDeskId('all');
+    setProgress({ status: 'processing', label: 'Processing all desks…' });
     try {
       // Parse every desk's file before reporting anything up — a combined,
       // cross-desk report (the whole point of "Submit All") only makes
@@ -87,8 +97,10 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
       }
       setSubmittedByDesk((prev) => ({ ...prev, ...nextSubmitted }));
       onSubmitAll(rowsByDeskForAll, scheduleDatesByDesk);
+      setProgress({ status: 'done', label: 'All desks submitted' });
     } catch (err) {
       setAllError(`Couldn't process all three files: ${err.message}`);
+      setProgress({ status: 'error', label: 'Submit All failed' });
     } finally {
       setSubmittingDeskId(null);
     }
@@ -140,6 +152,15 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
           );
         })}
       </div>
+
+      {progress && (
+        <div className={`upload-progress upload-progress-${progress.status}`} role="status">
+          <div className="upload-progress-track">
+            <div className="upload-progress-fill" />
+          </div>
+          <span className="upload-progress-label">{progress.label}</span>
+        </div>
+      )}
 
       <div className="upload-submit-all-row">
         <button

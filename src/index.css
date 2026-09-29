@@ -332,6 +332,61 @@ body {
   margin: 8px 0;
 }
 
+/* Progress bar shown above "Submit All" — appears the moment any Submit
+   (a single desk, or Submit All) is clicked, and stays on screen in its
+   done/error state afterward rather than auto-hiding (see UploadFlow.jsx). */
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.upload-progress-track {
+  flex: 1 1 auto;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  width: 40%;
+  background: var(--accent);
+}
+
+.upload-progress-processing .upload-progress-fill {
+  animation: upload-progress-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes upload-progress-indeterminate {
+  0% { margin-left: 0%; width: 30%; }
+  50% { margin-left: 70%; width: 30%; }
+  100% { margin-left: 0%; width: 30%; }
+}
+
+.upload-progress-done .upload-progress-fill {
+  width: 100%;
+  background: var(--window);
+}
+
+.upload-progress-error .upload-progress-fill {
+  width: 100%;
+  background: var(--overflow);
+}
+
+.upload-progress-label {
+  font-size: 13px;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+
+.upload-progress-done .upload-progress-label { color: var(--window); }
+.upload-progress-error .upload-progress-label { color: var(--overflow); }
+
 .upload-submit-all-row {
   display: flex;
   flex-direction: column;
