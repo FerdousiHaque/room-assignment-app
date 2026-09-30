@@ -40,14 +40,32 @@ Runs in this order for a given date:
    → "Not Found" for that slot; never moved elsewhere.
 3. **Priority tiers** — `Doctor → Fellow → Any → Nurse`. Each tier is fully
    placed (home desk, then its own overflow) before the next tier starts.
-4. **Per-slot room scoring** (`scoreRoom`), highest wins:
-   `primary/second preferred room` (+10) → `otherPreferredRoomCodes` match
-   (+7) → needs video-capable & room has it (+5) → `alternateRoomCodes`
-   match (+5) → window preference match (+2) → room already half-filled by
-   a complementary AM/PM provider (+1, or **+4** when this provider has
-   only 1–2 patients that day — a light/likely-half-day case, so it's
-   steered toward an already-shared room, leaving whole empty rooms for
-   busier providers).
+4. **Per-slot room filling** (`fillMissingSlots`), tried in this order for
+   whichever slots are still missing:
+   1. Each missing slot's own named preference — `primaryPreferredRoomId`
+      for slot 0, `secondPreferredRoomId` for slot 1 — a hard check (must be
+      a room at that desk and open), independently per slot, used exactly
+      as configured.
+   2. **"Other Set of Rooms" (`otherPreferredRoomCodes`)** — an ordered,
+      exhaustive list, tried in the exact order the codes were typed, NOT a
+      scoring bonus: if only one slot is still missing, each room in the
+      list is tried one at a time (first open one wins); if a 2-room
+      provider still has BOTH slots missing, the list is tried as
+      consecutive PAIRS in order (the first two codes as a pair, else the
+      next two, and so on) — the first pair where both rooms are open wins.
+      The two rooms in a pair don't need to be adjacent, since both are
+      explicitly named.
+   3. Whatever's still missing falls back to preference-scored room
+      selection (`scoreRoom`), highest wins: primary/second exact match
+      (+10, redundant with step 1 above but kept as a score) → needs
+      video-capable & room has it (+5) → `alternateRoomCodes` match (+5) →
+      window preference match (+2) → room already half-filled by a
+      complementary AM/PM provider (+1, or **+4** when this provider has
+      only 1–2 patients that day — a light/likely-half-day case, so it's
+      steered toward an already-shared room, leaving whole empty rooms for
+      busier providers) → an `otherPreferredRoomCodes` match left over from
+      step 2 (usually inert by this point, since step 2 already claimed any
+      match that was actually open).
 5. **Overflow** — only attempted when the home desk placed **zero** of a
    provider's needed rooms (a partial home-desk placement is never topped
    up elsewhere) during this pass. Tries each `alternateDeskIds` entry,
@@ -58,15 +76,14 @@ Runs in this order for a given date:
 6. **Two-room adjacency (fallback only)** — when the system has to pick a
    provider's second room itself, the two rooms must be "beside each
    other": same letter suffix, room numbers exactly 2 apart (`22E`/`24E`,
-   `63E`/`65E`, `30`/`32`). This is tried in order: (1) `secondPreferredRoomId`,
-   if it's a room at that desk and open — used exactly as configured, **no**
-   adjacency check; (2) `otherPreferredRoomCodes`, same — matched and used
-   as-is, no adjacency check; (3) only once neither of those could be used,
-   falls back to any open room adjacent to whatever the first room actually
-   received. The Providers form does **not** filter the Second Preferred
-   Room dropdown by adjacency — it only excludes whichever room is already
-   picked as Primary — since an explicitly configured Second Preferred Room
-   is always honored as typed, adjacent or not.
+   `63E`/`65E`, `30`/`32`). This is only step 3 above (`secondPreferredRoomId`
+   and `otherPreferredRoomCodes` — steps 1–2 — are always used exactly as
+   configured, no adjacency check); it falls back to any open room adjacent
+   to whatever the first room actually received. The Providers form does
+   **not** filter the Second Preferred Room dropdown by adjacency — it only
+   excludes whichever room is already picked as Primary — since an
+   explicitly configured Second Preferred Room is always honored as typed,
+   adjacent or not.
 7. **Fallback fill** (last resort, once after every tier) — no working,
    non-fixed provider is left missing a room while a genuinely open one
    exists anywhere. Searches every desk (home, then `alternateDeskIds` by
@@ -104,9 +121,18 @@ feedback that it wasn't working as expected).
 - **Assign rooms** — no date picker, uses today's date. Each desk submits
   its PDF independently (own Submit button); **Submit All** processes all
   three together (required for correct cross-desk overflow) and shows a
-  progress bar above the button — it appears on any Submit click, animates
-  while processing, and settles into a done/error state that stays until
-  the page is reloaded. Each desk board has its own PDF download button.
+  progress bar above the button — it appears on any Submit click and
+  settles into a done/error state that stays until the page is reloaded.
+  For **Submit All**, every percentage is tied to a real, actually-completed
+  step rather than simulated: each desk's file import earns its own real
+  20% jump the moment that desk's parse resolves (so all three imported =
+  60%), then the parent reports back as it actually finishes assigning
+  rooms and generating each desk's PDF, climbing in real steps to 90%, and
+  only jumps to 100% once everything has genuinely finished — never a fake
+  "done" before the work is actually over. A single desk's own Submit has
+  just one real event to report (the parse finishing), so that one still
+  uses a simulated climb-to-90%-then-jump animation while it waits. Each
+  desk board has its own PDF download button.
 - **Providers / Rooms tabs** — table with sortable columns (click a header
   to toggle asc/desc/default, including Type), inline edit (opens the edit
   form in a row under the one being edited, add form stays at the bottom),
@@ -123,11 +149,14 @@ feedback that it wasn't working as expected).
 
 `firstName`, `lastName`, `homeDeskId`, `preferredNumberOfRooms` (1–2),
 `primaryPreferredRoomId`, `secondPreferredRoomId`, `otherPreferredRoomCodes`
-(comma-separated codes, tried after primary/second), `windowPreference`,
-`alternateDeskIds`, `alternateRoomCodes` (comma-separated), `fixedRoom`,
-`type` (`Doctor`/`Fellow`/`Any`/`Nurse`), `hasOfficeOnFloor`,
-`suppressWarnings`. No static "has video visit" field — that's decided
-per day from the imported schedule.
+("Other Set of Rooms" — comma-separated codes, tried in typed order after
+primary/second: one at a time for a single missing room, or as consecutive
+pairs when both of a 2-room provider's rooms are still missing — see the
+assignment engine section above), `windowPreference`, `alternateDeskIds`,
+`alternateRoomCodes` (comma-separated), `fixedRoom`, `type`
+(`Doctor`/`Fellow`/`Any`/`Nurse`), `hasOfficeOnFloor`, `suppressWarnings`.
+No static "has video visit" field — that's decided per day from the
+imported schedule.
 
 ## Room fields
 

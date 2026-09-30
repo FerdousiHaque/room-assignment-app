@@ -44,6 +44,15 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// Hands control back to the browser for one tick so a state update that was
+// just queued (e.g. a progress-bar percentage) actually paints before the
+// next chunk of synchronous work runs — used by handleSubmitAll below so the
+// progress bar's real, staged steps are visible rather than all landing in
+// one uninterrupted block.
+function nextTick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 /** 'YYYY-MM-DD' -> the previous calendar day, same format. */
 function previousDayIso(dateStr) {
   const d = new Date(`${dateStr}T00:00:00Z`);
@@ -232,7 +241,14 @@ export default function App() {
   // path where a provider's alternateDeskIds are actually honored, so
   // overflow across desks comes out right (see handleDownloadDesk above for
   // why the plain per-desk Submit/Download never does this).
-  const handleSubmitAll = (rowsByDeskForAll, scheduleDatesForAll) => {
+  //
+  // Async, and reports real progress back to UploadFlow's progress bar via
+  // `onProgress(pct, label)` as each actual step finishes — the room-
+  // assignment engine run, then one call per desk's generated PDF — with a
+  // `nextTick()` yield after each so that percentage actually paints before
+  // the next chunk of work runs, rather than only ever being visible after
+  // everything is already done.
+  const handleSubmitAll = async (rowsByDeskForAll, scheduleDatesForAll, onProgress) => {
     const next = { ...rowsByDesk, ...rowsByDeskForAll };
     setRowsByDeskLocal(next);
     if (scheduleDatesForAll) {
@@ -242,6 +258,9 @@ export default function App() {
       console.error('Failed to save uploaded rows to Firestore:', err);
       setFirestoreStatus('error');
     });
+
+    onProgress?.(65, 'Assigning rooms…');
+    await nextTick();
 
     const combined = Object.values(next).flat();
     const { dayEntries: matchedEntries, unmatched } = deriveDayEntries(combined, providers);
@@ -256,7 +275,11 @@ export default function App() {
     });
     const realAll = allAssignments.filter((a) => !a.providerId.startsWith('unmatched-'));
 
-    for (const desk of desks) {
+    onProgress?.(75, 'Rooms assigned — generating PDFs…');
+    await nextTick();
+
+    for (let i = 0; i < desks.length; i++) {
+      const desk = desks[i];
       // Each desk's own export uses the date read off ITS OWN uploaded
       // schedule (just submitted, via scheduleDatesForAll — not yet reduced
       // into state at this point in the function, so read from the param
@@ -265,6 +288,9 @@ export default function App() {
       // readable date at all.
       const exportDate = (scheduleDatesForAll && scheduleDatesForAll[desk.id]) || scheduleDatesByDesk[desk.id] || date;
       downloadDeskAssignmentPdf({ desk, date: exportDate, rooms, assignments: realAll, providers });
+      const pct = 75 + Math.round(((i + 1) / desks.length) * 15); // climbs 75 -> 90, one real step per desk PDF
+      onProgress?.(Math.min(90, pct), `Generated ${desk.name}'s PDF (${i + 1}/${desks.length})…`);
+      await nextTick();
     }
   };
 

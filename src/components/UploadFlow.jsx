@@ -30,11 +30,15 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
   const [progress, setProgress] = useState(null); // { status: 'processing'|'done'|'error', label: string, pct: number } | null
   const rampRef = useRef(null);
 
-  // Parsing a PDF (and OCR-ing it, for a rasterized export) has no real
-  // progress events to hook into, so the bar's percentage is simulated: it
-  // climbs toward 90% in slowing steps while the work is actually running,
-  // then jumps straight to 100% the moment that work really finishes — it
-  // never claims "done" before the submit has actually completed.
+  // Used only by a single desk's own Submit (handleSubmitDesk) — that flow
+  // has just one real event to report (the parse finishing), so there's
+  // nothing to stage it against. It climbs toward 90% in slowing steps
+  // while the parse is actually running, then jumps straight to 100% the
+  // moment it really finishes — never claiming "done" early. "Submit All"
+  // (handleSubmitAll below) no longer uses this at all: it has real,
+  // individually-awaited steps to report (each desk's import, then each
+  // step the parent finishes), so every percentage there comes from an
+  // actual completed unit of work instead.
   const startProgress = (label) => {
     if (rampRef.current) clearInterval(rampRef.current);
     setProgress({ status: 'processing', label, pct: 0 });
@@ -109,14 +113,40 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
     setAllError(null);
     setErrorsByDesk({});
     setSubmittingDeskId('all');
-    startProgress('Processing all desks…');
+    // No simulated ramp for this flow at all — every percentage below comes
+    // from an actual finished step, so the bar never claims progress it
+    // hasn't made:
+    //   0-90%, in real 20%-per-desk jumps, as each desk's file is actually
+    //   imported (Stage 1, below) — then real jumps reported back by the
+    //   parent (Stage 2) as it actually finishes assigning rooms and then
+    //   generating each desk's PDF, capped at 90% until truly done — then a
+    //   final jump straight to 100% only once everything has genuinely
+    //   completed.
+    if (rampRef.current) {
+      clearInterval(rampRef.current);
+      rampRef.current = null;
+    }
+    setProgress({ status: 'processing', label: 'Importing desk files…', pct: 0 });
     try {
-      // Parse every desk's file before reporting anything up — a combined,
-      // cross-desk report (the whole point of "Submit All") only makes
-      // sense if every desk's data is actually available together, so one
-      // bad file aborts the whole batch rather than submitting a partial set.
+      // Stage 1 — parse every desk's file before reporting anything up (a
+      // combined, cross-desk report only makes sense once every desk's data
+      // is available together, so one bad file aborts the whole batch
+      // rather than submitting a partial set), but each desk's own parse
+      // still earns its own real, individually-awaited 20% jump the moment
+      // IT resolves, even though they're all running concurrently.
+      let completedDesks = 0;
       const rowsByDeskEntries = await Promise.all(
-        desks.map(async (desk) => [desk, await parseDeskFile(desk, pendingFiles[desk.id])])
+        desks.map(async (desk) => {
+          const result = await parseDeskFile(desk, pendingFiles[desk.id]);
+          completedDesks += 1;
+          const pct = Math.min(90, completedDesks * 20);
+          setProgress((prev) =>
+            prev && prev.status === 'processing'
+              ? { ...prev, pct: Math.max(prev.pct, pct), label: `Imported ${completedDesks} of ${desks.length} desk files…` }
+              : prev
+          );
+          return [desk, result];
+        })
       );
       const rowsByDeskForAll = {};
       const scheduleDatesByDesk = {};
@@ -127,7 +157,14 @@ export default function UploadFlow({ desks, onDeskSubmit, onSubmitAll }) {
         nextSubmitted[desk.id] = { fileName: pendingFiles[desk.id].name, rowCount: rows.length, scheduleDate };
       }
       setSubmittedByDesk((prev) => ({ ...prev, ...nextSubmitted }));
-      onSubmitAll(rowsByDeskForAll, scheduleDatesByDesk);
+
+      // Stage 2 — room assignment + per-desk PDF generation, reported back
+      // by the parent as each real step of that work actually completes.
+      await onSubmitAll(rowsByDeskForAll, scheduleDatesByDesk, (pct, label) => {
+        setProgress((prev) =>
+          prev && prev.status === 'processing' ? { ...prev, pct: Math.max(prev.pct, Math.min(90, pct)), label } : prev
+        );
+      });
       finishProgress('done', 'All desks submitted');
     } catch (err) {
       setAllError(`Couldn't process all three files: ${err.message}`);
