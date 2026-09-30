@@ -18,7 +18,6 @@ src/
 │   ├── RoomManager.jsx          # Room CRUD table, inline edit, sort, delete confirm
 │   ├── RoomBlockManager.jsx     # Room blocks — disabled in UI, code intact (see below)
 │   ├── ConfirmDialog.jsx        # Shared yes/no confirm popup (used by delete actions)
-│   ├── LogsPanel.jsx            # Real per-run engine narration, clears on refresh
 │   └── WarningList.jsx          # Surfaces unresolved overflow/video/capacity warnings
 ├── logic/
 │   ├── assignmentEngine.js      # Pure rules engine (no Firebase/PDF calls) — see below
@@ -96,8 +95,9 @@ fixed-room provider with zero patients that day has their room released
 back into the normal pool instead of reserved, so it's free for anyone.
 Every run also returns a `logs` array — plain narration of what actually
 happened ("Working on Desk A providers…", "Shifting Dr. X to Desk B",
-"Cross-checking all assignments…", "Finalizing all the providers…"),
-shown in the UI's Logs box (see below).
+"Cross-checking all assignments…", "Finalizing all the providers…"); the UI
+doesn't currently surface it anywhere (an earlier Logs box was removed per
+feedback that it wasn't working as expected).
 
 ## UI
 
@@ -106,10 +106,7 @@ shown in the UI's Logs box (see below).
   three together (required for correct cross-desk overflow) and shows a
   progress bar above the button — it appears on any Submit click, animates
   while processing, and settles into a done/error state that stays until
-  the page is reloaded. A **Logs** box sits between the upload section and
-  the "Needs review" warnings, showing that run's real engine narration
-  (`logs`, see above) — it clears on refresh, nothing is persisted. Each
-  desk board has its own PDF download button.
+  the page is reloaded. Each desk board has its own PDF download button.
 - **Providers / Rooms tabs** — table with sortable columns (click a header
   to toggle asc/desc/default, including Type), inline edit (opens the edit
   form in a row under the one being edited, add form stays at the bottom),

@@ -5,7 +5,6 @@ import { deriveDayEntries, buildUnmatchedProviderEntries } from './logic/pdfPars
 import { downloadDeskAssignmentPdf } from './logic/pdfGenerator.js';
 import DeskBoard from './components/DeskBoard.jsx';
 import WarningList from './components/WarningList.jsx';
-import LogsPanel from './components/LogsPanel.jsx';
 import UploadFlow from './components/UploadFlow.jsx';
 import ProviderManager from './components/ProviderManager.jsx';
 import RoomManager from './components/RoomManager.jsx';
@@ -148,12 +147,10 @@ export default function App() {
     };
   }, [combinedRows, providers, desks]);
 
-  // `logs` is real, human-readable narration of what the engine actually did
-  // on this run ("Working on Desk A providers…", "Shifting X to Desk B",
-  // "Finalizing all the providers…") — see the Logs box below. It's plain
-  // derived state recomputed by this useMemo, so it naturally clears on its
-  // own on page refresh; nothing about it is persisted.
-  const { assignments, warnings: engineWarnings, logs } = useMemo(() => {
+  // generateDailyAssignments also returns a `logs` narration array, but the
+  // UI no longer surfaces it (the Logs box was removed per feedback) — it's
+  // simply left unused here rather than pulled into a variable.
+  const { assignments, warnings: engineWarnings } = useMemo(() => {
     if (!dayEntries) return { assignments: [], warnings: [], logs: [] };
     // roomBlocks is hardcoded to [] while the room-blocking feature is
     // disabled (see the commented-out import above) — the engine still
@@ -303,8 +300,6 @@ export default function App() {
       {tab === 'assign' && (
         <>
           <UploadFlow desks={desks} onDeskSubmit={handleDeskSubmit} onSubmitAll={handleSubmitAll} />
-
-          {logs.length > 0 && <LogsPanel logs={logs} />}
 
           {warnings.length > 0 && <WarningList warnings={warnings} />}
 
