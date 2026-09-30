@@ -32,6 +32,18 @@ src/
 
 Runs in this order for a given date:
 
+0. **No-room-needed exclusion** — before anything else, a provider is
+   dropped from the working set entirely (no assignment attempt, no
+   warning, doesn't occupy a room, doesn't count toward any desk's load)
+   when **all** of: `hasOfficeOnFloor` is true, they have **zero in-person
+   patients** that day (`inPersonPatientCount` — video and telephone visits
+   don't count as in-person), and their `type` is **not** `Doctor` or
+   `Fellow` (a Doctor/Fellow always still gets a room, even with an office
+   on the floor and an all-video/telephone day). `inPersonPatientCount` is
+   computed by the PDF parser: it starts from `patientCount` and subtracts
+   video visits; telephone-visit rows are dropped entirely upstream (never
+   counted in `patientCount` either, never left in `unmatched`) — this
+   matches the existing OCR parser's telephone handling.
 1. **Blocked slots** — `computeBlockedSlots` marks any room-session (AM/PM)
    covered by a room block as unavailable before anything else runs.
 2. **Fixed-room reservation** — a provider with `fixedRoom: true` and at
@@ -59,13 +71,14 @@ Runs in this order for a given date:
         consecutive PAIRS in order (the first two codes as a pair, else the
         next two, and so on) — the first pair where both rooms are open
         wins. The two rooms in a pair don't need to be adjacent, since both
-        are explicitly named. If the list has an **odd number of codes**
-        (can't be evenly paired), it's skipped entirely here — not even a
-        leading complete pair is used — falling straight through to the
-        adjacency fallback (step 3) instead.
+        are explicitly named. If the list has an **odd number of codes**,
+        every complete leading pair is still tried (5 codes tries 1&2, then
+        3&4) — only the single trailing leftover code goes unused, falling
+        through to the adjacency fallback (step 3) for whichever slot it
+        would have filled.
    2b. **"Alt desk rooms" (`alternateRoomCodes`)** — the exact same
-      ordered/paired/adjacency-preference/odd-skip treatment as step 2,
-      one tier lower, but **only** at a desk that's actually one of this
+      ordered/paired/adjacency-preference treatment as step 2, one tier
+      lower, but **only** at a desk that's actually one of this
       provider's checked "Alternate desks (overflow-eligible)" — a code is
       matched only against that specific desk's own rooms, never the home
       desk and never a different alternate desk that happens to have a room
@@ -87,7 +100,11 @@ Runs in this order for a given date:
 5. **Overflow** — only attempted when the home desk placed **zero** of a
    provider's needed rooms (a partial home-desk placement is never topped
    up elsewhere) during this pass. Tries each `alternateDeskIds` entry,
-   lightest patient load first (this ordering is unaffected by `alternateRoomCodes` —
+   lightest **in-person** patient load first — `patientLoad` sums each
+   desk's already-placed providers' `inPersonPatientCount`, so a desk full
+   of video-only visits doesn't look "busy" and a desk with real in-person
+   volume does, even if the video-heavy desk's raw `patientCount` is higher
+   (this ordering is unaffected by `alternateRoomCodes` —
    see step 2b above for how that field itself is matched once a
    particular alternate desk is actually being tried); a desk must fit
    **every** missing room at once or it's rolled back (`release()`) and the

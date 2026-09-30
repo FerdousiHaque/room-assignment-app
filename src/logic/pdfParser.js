@@ -31,12 +31,15 @@ const HEADER_SYNONYMS = {
   // the imported report format already contains a specific indicator,
   // use it").
   videoFlag: ['video visit', 'virtual visit', 'is video', 'video?', 'telehealth flag', 'televisit'],
+  // Same idea for a dedicated telephone-visit indicator column.
+  phoneFlag: ['phone visit', 'telephone visit', 'is phone', 'phone?', 'tel visit'],
   // Otherwise fall back to a descriptive visit-type/modality column and
   // read its value.
   visitType: ['visit type', 'appointment type', 'appt type', 'modality']
 };
 
 const VIDEO_VALUE_KEYWORDS = ['video', 'virtual', 'telehealth', 'telemedicine', 'e-visit', 'evisit'];
+const TELEPHONE_VALUE_KEYWORDS = ['phone', 'telephone', 'tel visit', 'call'];
 const TRUTHY_FLAG_VALUES = ['y', 'yes', 'true', '1', 'x'];
 
 function looksLikeVideoVisit(record) {
@@ -47,6 +50,24 @@ function looksLikeVideoVisit(record) {
   if (record.visitType !== undefined) {
     const v = record.visitType.toLowerCase();
     return VIDEO_VALUE_KEYWORDS.some((kw) => v.includes(kw));
+  }
+  return false;
+}
+
+// Telephone visits are ignored entirely — same rule pdfOcrParser.js already
+// applies via its blue-icon classification ("telephone visits are skipped
+// entirely, never even added to `rows`"). This is the text-layer parser's
+// equivalent for a PDF that has a phone-visit indicator or visit-type
+// column instead of an icon: such a row is dropped before it's ever
+// matched to a provider, counted, or aggregated in any way.
+function looksLikePhoneVisit(record) {
+  if (record.phoneFlag !== undefined) {
+    const v = record.phoneFlag.trim().toLowerCase();
+    return TRUTHY_FLAG_VALUES.includes(v) || TELEPHONE_VALUE_KEYWORDS.some((kw) => v.includes(kw));
+  }
+  if (record.visitType !== undefined) {
+    const v = record.visitType.toLowerCase();
+    return TELEPHONE_VALUE_KEYWORDS.some((kw) => v.includes(kw));
   }
   return false;
 }
@@ -301,16 +322,30 @@ function rowMrn(row) {
  * shift AM/PM/FULL session detection, or otherwise affect room assignment.
  * A row with no readable MRN at all is never treated as a duplicate of
  * anything (there's nothing to compare), so it's always counted.
+ *
+ * Telephone visits are dropped entirely (see looksLikePhoneVisit) — never
+ * matched, counted, or aggregated at all, same as pdfOcrParser.js's
+ * icon-based handling of phone visits.
+ *
+ * `inPersonPatientCount` (in-person only, excluding video — telephone
+ * never even reaches here) is tracked alongside the overall `patientCount`
+ * (which still includes video visits) — the engine uses the in-person-only
+ * count for desk-selection "load" ordering, and for deciding whether a
+ * provider with an office on the floor needs a room at all today.
+ * `soloTime` carries the one raw imported Time value for a provider with
+ * exactly one patient that day, for display next to their name on a
+ * full-day solo assignment (see pdfGenerator.js).
  */
 export function deriveDayEntries(rows, providers) {
   const byName = new Map(
     providers.map((p) => [normalizeName(`${p.lastName}, ${p.firstName}`), p])
   );
 
-  const grouped = new Map(); // providerId -> { patientCount, times: [], hasVideoVisit, seenMrns: Set }
+  const grouped = new Map(); // providerId -> { patientCount, inPersonPatientCount, times: [], hasVideoVisit, seenMrns: Set }
   const unmatched = [];
 
   for (const row of rows) {
+    if (looksLikePhoneVisit(row)) continue; // ignored entirely, matching pdfOcrParser.js
     const key = normalizeName(row.provider);
     const provider = byName.get(key);
     if (!provider) {
@@ -318,7 +353,7 @@ export function deriveDayEntries(rows, providers) {
       continue;
     }
     if (!grouped.has(provider.id)) {
-      grouped.set(provider.id, { patientCount: 0, times: [], hasVideoVisit: false, seenMrns: new Set() });
+      grouped.set(provider.id, { patientCount: 0, inPersonPatientCount: 0, times: [], hasVideoVisit: false, seenMrns: new Set() });
     }
     const g = grouped.get(provider.id);
     const mrn = rowMrn(row);
@@ -326,15 +361,19 @@ export function deriveDayEntries(rows, providers) {
       if (g.seenMrns.has(mrn)) continue; // duplicate visit for this provider — ignore entirely
       g.seenMrns.add(mrn);
     }
+    const isVideo = looksLikeVideoVisit(row);
     g.patientCount += 1;
+    if (!isVideo) g.inPersonPatientCount += 1;
     if (row.time) g.times.push(row.time);
-    if (looksLikeVideoVisit(row)) g.hasVideoVisit = true;
+    if (isVideo) g.hasVideoVisit = true;
   }
 
   const dayEntries = [...grouped.entries()].map(([providerId, g]) => ({
     providerId,
     isWorking: true,
     patientCount: g.patientCount,
+    inPersonPatientCount: g.inPersonPatientCount,
+    soloTime: g.patientCount === 1 ? g.times[0] || null : null,
     session: deriveSession(g.times),
     hasVideoVisit: g.hasVideoVisit
   }));
@@ -354,7 +393,7 @@ export function deriveDayEntries(rows, providers) {
  * "any empty room" is the point.
  */
 export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
-  const grouped = new Map(); // "deskId||name" -> { deskId, name, patientCount, times, seenMrns }
+  const grouped = new Map(); // "deskId||name" -> { deskId, name, patientCount, inPersonPatientCount, times, seenMrns }
 
   for (const row of unmatchedRows) {
     // Trim FIRST, then fall back — a whitespace-only provider field (e.g.
@@ -362,9 +401,13 @@ export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
     // alone would keep the blank string and the room would show no name at
     // all instead of falling back. See rule: an unmatched name must still
     // be shown, never blank, even though it isn't in the Providers list.
+    // (Phone-visit rows never reach here at all — deriveDayEntries drops
+    // them before a row is ever added to `unmatched`.)
     const name = (row.provider || '').trim() || 'Unknown provider';
     const key = `${row.deskId}||${normalizeName(name)}`;
-    if (!grouped.has(key)) grouped.set(key, { deskId: row.deskId, name, patientCount: 0, times: [], seenMrns: new Set() });
+    if (!grouped.has(key)) {
+      grouped.set(key, { deskId: row.deskId, name, patientCount: 0, inPersonPatientCount: 0, times: [], seenMrns: new Set() });
+    }
     const g = grouped.get(key);
     // Same duplicate-visit filtering as deriveDayEntries above — an
     // unmatched name's duplicate MRN visit shouldn't inflate its patient
@@ -375,6 +418,7 @@ export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
       g.seenMrns.add(mrn);
     }
     g.patientCount += 1;
+    if (!looksLikeVideoVisit(row)) g.inPersonPatientCount += 1;
     if (row.time) g.times.push(row.time);
   }
 
@@ -401,6 +445,8 @@ export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
       providerId: id,
       isWorking: true,
       patientCount: g.patientCount,
+      inPersonPatientCount: g.inPersonPatientCount,
+      soloTime: g.patientCount === 1 ? g.times[0] || null : null,
       session: deriveSession(g.times)
     });
   }

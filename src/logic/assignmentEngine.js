@@ -93,10 +93,10 @@
  *        so on through the whole list — the first pair where both rooms
  *        are open wins. The two rooms in a pair do NOT need to be
  *        adjacent, since both are explicitly named by the user. If the
- *        list has an ODD number of codes, it can't be evenly paired, so
- *        it's skipped ENTIRELY in this two-missing-slots case (not even a
- *        leading complete pair is used) — falls straight through to #17's
- *        adjacency fallback instead.
+ *        list has an ODD number of codes, every complete leading pair is
+ *        still tried (e.g. 5 codes tries codes 1&2, then 3&4) — only the
+ *        single trailing leftover code goes unused here, since it has no
+ *        partner; #17's adjacency fallback is what's meant for that case.
  *      - When only slot 1 is still missing (slot 0 already has a room,
  *        whether from a preference or this same list) for a 2-room
  *        provider, a room in the list that's actually ADJACENT (#17) to
@@ -176,7 +176,19 @@
  *    as it was — the never-drop-a-provider guarantee (#10) always
  *    outranks a video-capable preference. Interleaved with #19's fallback
  *    sweep (same bounded loop) since either kind of change can open up a
- *    room the other kind of pass would want. This is the final check
+ *    room the other kind of pass would want.
+ * 21. NEW — in-person-only desk load / no-room-needed providers: desk-load
+ *    ordering (which alternate desk is "lightest", used for overflow — see
+ *    patientLoad) counts only IN-PERSON visits, never telephone or video —
+ *    a virtual visit doesn't tie up a room at one desk over another, so it
+ *    shouldn't weigh into that comparison. Separately, a provider who has
+ *    an office on the floor AND has NO in-person visit at all today (every
+ *    visit is telephone or video) doesn't need an assigned exam room at
+ *    all — they can see those patients from their own office — UNLESS
+ *    their type is Doctor or Fellow, who always still get a room regardless
+ *    of visit mix. Such a provider is filtered out before Phase 0 even
+ *    starts: no placement attempt, no "Not Found" warning, no entry in the
+ *    results at all, since nothing was needed. This is the final check
  *    before the results are considered ready to export.
  * ------------------------------------------------------------------
  */
@@ -244,10 +256,16 @@ export function computeBlockedSlots(roomBlocks, date) {
  *                                alternateRoomCodes, otherPreferredRoomCodes,
  *                                hasOfficeOnFloor, suppressWarnings,
  *                                fixedRoom, type }]
- * @param {Array} dayEntries  [{ providerId, isWorking, patientCount, session, hasVideoVisit? }]
+ * @param {Array} dayEntries  [{ providerId, isWorking, patientCount, inPersonPatientCount?,
+ *                                soloTime?, session, hasVideoVisit? }]
  *                             hasVideoVisit is the ONLY source of whether a video-capable
  *                             room is needed — it comes from that day's import, never from
- *                             a static provider field.
+ *                             a static provider field. inPersonPatientCount excludes video
+ *                             visits (telephone visits are dropped entirely upstream, in
+ *                             pdfParser.js, and never reach here at all) — used for desk-load
+ *                             ordering (rule #21) and falls back to patientCount if omitted.
+ *                             soloTime is the one raw imported Time value for a provider with
+ *                             exactly one patient that day, or null/omitted otherwise.
  * @param {Array} roomBlocks  [{ id, roomId, date, startMinutes, endMinutes, reason }]
  * @param {string} date       'YYYY-MM-DD', used to resolve which blocks apply today
  * @returns {{ assignments: Array, warnings: Array, logs: Array }}
@@ -341,6 +359,19 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         return false;
       }
       return true;
+    })
+    // A provider with an office on the floor whose day is ENTIRELY
+    // telephone/video visits (no in-person visit at all) can see those
+    // patients from their own office and doesn't need an exam room today —
+    // except a Doctor or Fellow, who always still gets a room regardless of
+    // visit mix. Excluded here means excluded entirely: no placement
+    // attempt, no "Not Found" warning, no entry in `assignments` — there's
+    // nothing to report because nothing was needed.
+    .filter((e) => {
+      const type = e.provider.type || 'Any';
+      const noInPersonVisits = (e.inPersonPatientCount ?? e.patientCount ?? 0) === 0;
+      const needsNoRoomToday = e.provider.hasOfficeOnFloor && noInPersonVisits && type !== 'Doctor' && type !== 'Fellow';
+      return !needsNoRoomToday;
     });
 
   const entriesByHomeDesk = {};
@@ -459,10 +490,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
    * are left, mutating `filled`/`pickedSoFar` and occupying rooms on
    * success. Returns whether anything was filled.
    *   - Both slots still missing: tried as consecutive PAIRS in typed
-   *     order. An ODD-length list can't be evenly paired, so it's skipped
-   *     ENTIRELY here (not even a leading complete pair is used) — rule
-   *     #15's odd-list carve-out; #17's adjacency fallback is what's meant
-   *     for that case instead.
+   *     order — the first two codes as a pair, else the next two, and so
+   *     on. An ODD-length list still tries every complete leading pair it
+   *     has (e.g. 5 codes tries codes 1&2, then 3&4) — only the single
+   *     trailing leftover code (the 5th, in that example) goes unused here
+   *     since it has no partner; #17's adjacency fallback is what's meant
+   *     for that leftover case.
    *   - Only slot 1 still missing (slot 0 already has a room): a room in
    *     the list ADJACENT (#17) to slot 0's room is preferred — tried
    *     before the rest of the list, for a tidier pair — but any other
@@ -474,7 +507,6 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     if (ids.length === 0) return false;
 
     if (stillMissing.length === 2) {
-      if (ids.length % 2 !== 0) return false; // odd count — skip entirely, rule #15
       for (let i = 0; i + 1 < ids.length; i += 2) {
         const a = ids[i];
         const b = ids[i + 1];
@@ -670,10 +702,15 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     assignments.push(makeAssignment(entry, homeDesk, slots));
   }
 
+  // Desk-selection ordering (which alternate desk is "lightest") counts
+  // only IN-PERSON visits — a video visit doesn't need a room at this
+  // specific desk any more than at another, so it shouldn't weigh a desk
+  // down when deciding where to send someone else's overflow. Falls back
+  // to the overall patientCount for an assignment that predates this field.
   const patientLoad = (deskId) =>
     assignments
       .filter((a) => a.homeDeskId === deskId || a.roomSlots.some((s) => s.deskId === deskId))
-      .reduce((sum, a) => sum + (a.patientCount || 0), 0);
+      .reduce((sum, a) => sum + (a.inPersonPatientCount ?? a.patientCount ?? 0), 0);
 
   const checkVideoCapable = (tierAssignments) => {
     for (const assignment of tierAssignments) {
@@ -1126,6 +1163,14 @@ function makeAssignment(entry, homeDesk, roomSlots) {
     homeDeskName: homeDesk.name,
     session: entry.session,
     patientCount: entry.patientCount,
+    // In-person-only patient count (falls back to patientCount for an entry
+    // that predates this field) — used for desk-load ordering; see
+    // patientLoad above.
+    inPersonPatientCount: entry.inPersonPatientCount ?? entry.patientCount,
+    // The one raw imported Time value for a provider with exactly one
+    // patient that day (null otherwise) — see pdfGenerator.js's use of it
+    // next to a solo, full-day provider's name.
+    soloTime: entry.soloTime || null,
     roomSlots // [{ roomId: string|null, deskId: string|null, isOverflow: bool }, ...]
   };
 }
