@@ -336,8 +336,11 @@ function drawSimpleOccupiedRoomList(doc, { deskRooms, occupancy, marginX, cursor
     } else if (room.kind === 'office' || room.kind === 'utility') {
       value = room.label || '—';
     } else {
-      const tags = [room.hasWindow ? 'window' : null, room.videoCapable ? 'video-capable' : null].filter(Boolean);
-      value = tags.join(', ') || 'Empty';
+      // No provider found for this room today — blank, not a "window" /
+      // "video-capable" descriptor or "Empty" placeholder text, so an
+      // unfilled room reads as genuinely empty rather than printing
+      // capability info nobody's using today.
+      value = '';
     }
     doc.text(room.code || '—', marginX, y);
     doc.text(value, marginX + 100, y);

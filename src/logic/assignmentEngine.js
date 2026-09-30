@@ -27,11 +27,17 @@
  *    during placement; if it still can't be met (e.g. no video-capable
  *    room was available at all), a warning is raised rather than silently
  *    ignoring the requirement.
- * 11. NEW — alternateRoomCodes: a provider can name specific room codes
- *    (free text, comma-separated in the UI) that should be favored whenever
- *    they're a candidate — most useful for overflow, since a provider's
- *    home-desk rooms aren't usually also listed here. Same scoring weight
- *    as the primary/second preferred room.
+ * 11. NEW — alternateRoomCodes ("Alt desk rooms"): a provider can name
+ *    specific room codes (free text, comma-separated in the UI) belonging
+ *    to one or more of their checked `alternateDeskIds` ("Alternate desks
+ *    (overflow-eligible)"). A code is only ever matched against the SPECIFIC
+ *    alternate desk actually being tried — never the home desk, and never
+ *    a different alternate desk that happens to have a room with the same
+ *    code — and only once `deskId` is itself one of the provider's checked
+ *    alternate desks at all. Gets the exact same ordered/paired treatment
+ *    as "Other Set of Rooms" (rule #15), one priority tier lower: tried in
+ *    typed order, right after Other Set of Rooms has had its turn — see
+ *    fillMissingSlots.
  * 12. NEW — Room `kind`: a room is 'exam' (default, if unset), 'office', or
  *    'utility'. Only 'exam' rooms are ever candidates for assignment — an
  *    'office' room is a specific provider's permanent office (they don't
@@ -86,10 +92,21 @@
  *        as a pair, then (if that pair isn't fully open) the next two, and
  *        so on through the whole list — the first pair where both rooms
  *        are open wins. The two rooms in a pair do NOT need to be
- *        adjacent, since both are explicitly named by the user.
+ *        adjacent, since both are explicitly named by the user. If the
+ *        list has an ODD number of codes, it can't be evenly paired, so
+ *        it's skipped ENTIRELY in this two-missing-slots case (not even a
+ *        leading complete pair is used) — falls straight through to #17's
+ *        adjacency fallback instead.
+ *      - When only slot 1 is still missing (slot 0 already has a room,
+ *        whether from a preference or this same list) for a 2-room
+ *        provider, a room in the list that's actually ADJACENT (#17) to
+ *        slot 0's room is preferred — tried before the rest of the list —
+ *        for a tidier pair; any other open room in the list still works if
+ *        none are adjacent.
  *    Whatever this list can't resolve falls through to the rest of the
  *    existing logic exactly as before (#17's adjacency fallback, generic
- *    scoring, etc.) — see fillMissingSlots.
+ *    scoring, etc.) — see fillMissingSlots. alternateRoomCodes ("Alt desk
+ *    rooms", #11) gets this exact same treatment, one tier lower — see #11.
  * 16. NEW — a provider's rooms are never split across two different desks
  *    during the normal tiered placement/overflow pass. If a provider needs
  *    more than one room and their home desk can't fit all of them, overflow
@@ -141,8 +158,26 @@
  *    placement made late in one pass — a provider shifted to another desk,
  *    a nurse relocated after eviction — can open up a room an
  *    earlier-processed provider in that same pass had already given up on;
- *    this catches that instead of leaving it for manual review. This is the
- *    final check before the results are considered ready to export.
+ *    this catches that instead of leaving it for manual review.
+ * 20. NEW — video-capable backtracking (tryImproveVideoCapableFit): the #18/
+ *    #19 passes above only ever revisit a provider with a fully MISSING
+ *    slot — a provider who already has a room, just not a video-capable
+ *    one when they needed it (#9), was only ever left as a warning. Now,
+ *    for each such provider, the system looks for a video-capable room
+ *    (anywhere this provider could reach) held by someone who (a) doesn't
+ *    need video-capable themselves — swapping them out can't just move the
+ *    same problem elsewhere, (b) isn't a same-day fixed-room reservation
+ *    (#13 — never touched), and (c) isn't a HIGHER-priority type (#14)
+ *    than the provider who needs the swap — a Nurse's video need can never
+ *    bump a Doctor/Fellow/Any-type provider. The swap is only ever
+ *    COMMITTED if the displaced provider can genuinely be relocated to
+ *    another open room in that same attempt; if they can't, the whole
+ *    thing is rolled back and the video-capable mismatch is left exactly
+ *    as it was — the never-drop-a-provider guarantee (#10) always
+ *    outranks a video-capable preference. Interleaved with #19's fallback
+ *    sweep (same bounded loop) since either kind of change can open up a
+ *    room the other kind of pass would want. This is the final check
+ *    before the results are considered ready to export.
  * ------------------------------------------------------------------
  */
 
@@ -376,7 +411,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
   // Room ids matching provider.otherPreferredRoomCodes at `deskId`, in the
   // SAME order the codes were typed (a code with no matching room at this
-  // desk is simply skipped) — rule #15b uses this as an explicit, ordered
+  // desk is simply skipped) — rule #15 uses this as an explicit, ordered
   // list to try, not just a scoring nudge, so the order the user typed the
   // codes in actually matters (first pair, then next pair, etc.).
   const otherSetRoomIdsInOrder = (deskId, entry) => {
@@ -395,6 +430,89 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return ids;
   };
 
+  // Same idea as otherSetRoomIdsInOrder, for provider.alternateRoomCodes
+  // ("Alt desk rooms") — rule #11. This field is only meaningful at one of
+  // the provider's checked alternate desks, so it resolves to nothing at
+  // all unless `deskId` is actually one of them — a code is only ever
+  // matched against THAT desk's own rooms, never the home desk, and never
+  // a different alternate desk's room that happens to share the same code.
+  const altDeskRoomIdsInOrder = (deskId, entry) => {
+    if (!(entry.provider.alternateDeskIds || []).includes(deskId)) return [];
+    const codes = entry.provider.alternateRoomCodes || [];
+    if (codes.length === 0) return [];
+    const codeToRoomId = new Map();
+    for (const id of roomsByDesk[deskId] || []) {
+      const code = roomState[id].room.code;
+      if (!codeToRoomId.has(code)) codeToRoomId.set(code, id);
+    }
+    const ids = [];
+    for (const code of codes) {
+      const id = codeToRoomId.get(code);
+      if (id) ids.push(id);
+    }
+    return ids;
+  };
+
+  /**
+   * Shared by fillMissingSlots' steps 2 and 2b below: tries `ids` (already
+   * in the field's typed order) against whichever of `stillMissing`'s slots
+   * are left, mutating `filled`/`pickedSoFar` and occupying rooms on
+   * success. Returns whether anything was filled.
+   *   - Both slots still missing: tried as consecutive PAIRS in typed
+   *     order. An ODD-length list can't be evenly paired, so it's skipped
+   *     ENTIRELY here (not even a leading complete pair is used) — rule
+   *     #15's odd-list carve-out; #17's adjacency fallback is what's meant
+   *     for that case instead.
+   *   - Only slot 1 still missing (slot 0 already has a room): a room in
+   *     the list ADJACENT (#17) to slot 0's room is preferred — tried
+   *     before the rest of the list, for a tidier pair — but any other
+   *     open room in the list still works if none are adjacent.
+   *   - Only slot 0 still missing (a 1-room provider, or slot 1 already
+   *     filled): plain first-open-in-order, no adjacency concept applies.
+   */
+  const tryOrderedList = (ids, stillMissing, pickedSoFar, filled, entry, anchorCodeForSlot1) => {
+    if (ids.length === 0) return false;
+
+    if (stillMissing.length === 2) {
+      if (ids.length % 2 !== 0) return false; // odd count — skip entirely, rule #15
+      for (let i = 0; i + 1 < ids.length; i += 2) {
+        const a = ids[i];
+        const b = ids[i + 1];
+        if (a !== b && canFit(a, entry.session) && canFit(b, entry.session)) {
+          filled[stillMissing[0]] = a;
+          filled[stillMissing[1]] = b;
+          occupy(a, entry.session, entry.providerId);
+          occupy(b, entry.session, entry.providerId);
+          pickedSoFar.push(a, b);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    const slotIndex = stillMissing[0];
+    const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+    let candidateIds = ids;
+    if (need2 && slotIndex === 1) {
+      const anchorCode = filled[0] !== undefined ? roomState[filled[0]]?.room.code || null : anchorCodeForSlot1;
+      if (anchorCode) {
+        const adjacent = ids.filter((id) => roomsAdjacent(roomState[id].room.code, anchorCode));
+        if (adjacent.length > 0) {
+          candidateIds = [...adjacent, ...ids.filter((id) => !adjacent.includes(id))];
+        }
+      }
+    }
+    for (const id of candidateIds) {
+      if (!pickedSoFar.includes(id) && canFit(id, entry.session)) {
+        filled[slotIndex] = id;
+        occupy(id, entry.session, entry.providerId);
+        pickedSoFar.push(id);
+        return true;
+      }
+    }
+    return false;
+  };
+
   /**
    * Fills as many of `entry`'s still-missing slots as possible at `deskId`
    * in one shot. `missingSlotIndexes` says which slots still need a room
@@ -403,13 +521,15 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
    *      for slot 0, secondPreferredRoomId for slot 1 — a hard check (must
    *      be a room at THIS desk and open), independently per slot, used
    *      exactly as configured.
-   *   2. Rule #15b — provider.otherPreferredRoomCodes, as an ordered,
-   *      exhaustive list (the order the user typed them in): tried as
-   *      consecutive PAIRS when BOTH slots are still missing after step 1
-   *      (the first two codes as a pair, else the next two, and so on
-   *      through the whole list — the two rooms don't need to be adjacent,
-   *      since both are explicitly named), or as an ordered single-room
-   *      list (first one that's open wins) when only ONE slot remains.
+   *   2. Rule #15 — provider.otherPreferredRoomCodes ("Other Set of
+   *      Rooms"), as an ordered, exhaustive list (the order the user typed
+   *      them in) — see tryOrderedList for the pairs/singles/adjacency-
+   *      preference/odd-list-skip details.
+   *   2b. Rule #11 — provider.alternateRoomCodes ("Alt desk rooms"), same
+   *      ordered/paired treatment as step 2, one tier lower — but ONLY
+   *      when `deskId` is actually one of this provider's checked
+   *      alternate desks (a code names a room at a SPECIFIC alternate
+   *      desk, never matched against any other desk's rooms).
    *   3. Whatever's still missing falls back to the existing logic exactly
    *      as before: a plain preference-scored pick for slot 0, or the
    *      anchor-adjacency rule (#17) for slot 1.
@@ -442,37 +562,19 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
     let stillMissing = missingSlotIndexes.filter((i) => filled[i] === undefined);
 
-    // Step 2: otherPreferredRoomCodes — ordered, exhaustive; pairs when
-    // both slots are still open, an ordered single-room list when only one
-    // is.
+    // Step 2: "Other Set of Rooms" (otherPreferredRoomCodes) — ordered,
+    // exhaustive; see tryOrderedList.
     if (stillMissing.length > 0) {
-      const ids = otherSetRoomIdsInOrder(deskId, entry);
-      if (ids.length > 0) {
-        if (stillMissing.length === 2) {
-          for (let i = 0; i + 1 < ids.length; i += 2) {
-            const a = ids[i];
-            const b = ids[i + 1];
-            if (a !== b && canFit(a, entry.session) && canFit(b, entry.session)) {
-              filled[stillMissing[0]] = a;
-              filled[stillMissing[1]] = b;
-              occupy(a, entry.session, entry.providerId);
-              occupy(b, entry.session, entry.providerId);
-              pickedSoFar.push(a, b);
-              break;
-            }
-          }
-        } else {
-          const slotIndex = stillMissing[0];
-          for (const id of ids) {
-            if (!pickedSoFar.includes(id) && canFit(id, entry.session)) {
-              filled[slotIndex] = id;
-              occupy(id, entry.session, entry.providerId);
-              pickedSoFar.push(id);
-              break;
-            }
-          }
-        }
-      }
+      tryOrderedList(otherSetRoomIdsInOrder(deskId, entry), stillMissing, pickedSoFar, filled, entry, anchorCodeForSlot1);
+    }
+
+    stillMissing = missingSlotIndexes.filter((i) => filled[i] === undefined);
+
+    // Step 2b: "Alt desk rooms" (alternateRoomCodes) — same ordered/paired
+    // treatment, only when `deskId` is one of this provider's checked
+    // alternate desks (altDeskRoomIdsInOrder resolves to [] otherwise).
+    if (stillMissing.length > 0) {
+      tryOrderedList(altDeskRoomIdsInOrder(deskId, entry), stillMissing, pickedSoFar, filled, entry, anchorCodeForSlot1);
     }
 
     stillMissing = missingSlotIndexes.filter((i) => filled[i] === undefined);
@@ -715,12 +817,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return ordered;
   };
 
-  // Same priority order as pickSlotRoom's slot-1 rule, but returns every
+  // Same priority order as fillMissingSlots' slot-1 rule, but returns every
   // eligible room id (not just an open one) so the eviction pass below can
   // also consider bumping someone out of a named preference before it ever
-  // considers an adjacency-only candidate: secondPreferredRoomId / matching
-  // otherPreferredRoomCodes rooms at this desk first (if any exist at all),
-  // then — only when none exist — rooms adjacent to `anchorCode`.
+  // considers an adjacency-only candidate: secondPreferredRoomId, then
+  // Other Set of Rooms / Alt desk rooms matches at this desk (if any exist
+  // at all), then — only when none exist — rooms adjacent to `anchorCode`.
   const slotEligibleRoomIds = (deskId, entry, slotIndex, anchorCode) => {
     const allIds = roomsByDesk[deskId] || [];
     const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
@@ -729,7 +831,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     const named = [];
     const secondId = entry.provider.secondPreferredRoomId;
     if (secondId && roomState[secondId]?.room.deskId === deskId) named.push(secondId);
-    for (const id of otherSetRoomIdsInOrder(deskId, entry)) {
+    for (const id of [...otherSetRoomIdsInOrder(deskId, entry), ...altDeskRoomIdsInOrder(deskId, entry)]) {
       if (!named.includes(id)) named.push(id);
     }
     if (named.length > 0) return named;
@@ -874,6 +976,100 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return changed;
   };
 
+  // ---- Phase 5 helper — video-capable backtracking (rule #20) -------------
+  // The fallback/cross-check pass above only ever revisits a provider with
+  // a fully MISSING slot. A provider who already has a room, just not a
+  // video-capable one when they needed it (#9), was only ever flagged as a
+  // warning. This makes one further, conservative attempt per call to fix
+  // that by swapping them into a video-capable room currently held by
+  // someone the swap can't hurt — see rule #20's doc comment at the top of
+  // this file for the exact guards. The swap is only ever committed if the
+  // displaced provider can genuinely be relocated in the same attempt;
+  // otherwise everything is rolled back and the mismatch is left exactly as
+  // it was. Returns whether anything changed, same shape as runFallbackPass,
+  // so the two can be interleaved in one bounded loop below.
+  const tryImproveVideoCapableFit = () => {
+    let changed = false;
+    for (const assignment of assignments) {
+      const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+      if (!entry || !entry.needsVideoCapable) continue;
+      const alreadyHasVideoRoom = assignment.roomSlots.some((s) => s.roomId && roomState[s.roomId]?.room.videoCapable);
+      if (alreadyHasVideoRoom) continue;
+      const filledSlotIndexes = assignment.roomSlots.map((s, i) => (s.roomId ? i : -1)).filter((i) => i !== -1);
+      if (filledSlotIndexes.length === 0) continue; // fully missing — #18/#19's job, not this one
+
+      const myRank = typeRank(entry.provider.type);
+
+      swapSearch: for (const desk of deskSearchOrder(entry)) {
+        for (const roomId of roomsByDesk[desk.id] || []) {
+          const room = roomState[roomId].room;
+          if (!room.videoCapable) continue;
+          if (assignment.roomSlots.some((s) => s.roomId === roomId)) continue; // already theirs
+
+          const s = roomState[roomId];
+          const occupantId =
+            entry.session === 'FULL' ? s.amOccupant || s.pmOccupant : entry.session === 'AM' ? s.amOccupant : s.pmOccupant;
+          if (!occupantId) continue; // a genuinely open video-capable room would already have been taken earlier
+          const occAssignment = assignments.find((a) => a.providerId === occupantId);
+          const occEntry = workingEntries.find((e) => e.providerId === occupantId);
+          if (!occAssignment || !occEntry) continue;
+          if (occEntry.needsVideoCapable) continue; // would just move the same problem elsewhere
+          if (occEntry.provider.fixedRoom && occEntry.patientCount > 0) continue; // #13 — never touched
+          if (typeRank(occEntry.provider.type) < myRank) continue; // never bump a higher-priority type
+          const occSlotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+          if (occSlotIndex === -1) continue;
+
+          for (const mySlotIndex of filledSlotIndexes) {
+            const myOldSlot = { ...assignment.roomSlots[mySlotIndex] };
+            const occOldSlot = { ...occAssignment.roomSlots[occSlotIndex] };
+
+            release(roomId, occAssignment.session);
+            release(myOldSlot.roomId, entry.session);
+            if (!canFit(roomId, entry.session)) {
+              // Freeing the occupant's side of this room still isn't
+              // enough for this provider's session — restore and move on.
+              occupy(myOldSlot.roomId, entry.session, entry.providerId);
+              occupy(roomId, occAssignment.session, occupantId);
+              continue;
+            }
+
+            occupy(roomId, entry.session, entry.providerId);
+            assignment.roomSlots[mySlotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+
+            let newOccSlot = null;
+            for (const relocDesk of deskSearchOrder(occEntry)) {
+              const result = fillMissingSlots(relocDesk.id, occEntry, [occSlotIndex], null);
+              if (result[occSlotIndex]) {
+                newOccSlot = { roomId: result[occSlotIndex], deskId: relocDesk.id, isOverflow: relocDesk.id !== occEntry.provider.homeDeskId };
+                break;
+              }
+            }
+
+            if (!newOccSlot) {
+              // Can't relocate the displaced provider without dropping
+              // them — undo the whole swap, leave the video mismatch as a
+              // warning instead (rule #10 always wins).
+              release(roomId, entry.session);
+              assignment.roomSlots[mySlotIndex] = myOldSlot;
+              occupy(myOldSlot.roomId, entry.session, entry.providerId);
+              occupy(roomId, occAssignment.session, occupantId);
+              occAssignment.roomSlots[occSlotIndex] = occOldSlot;
+              continue;
+            }
+
+            occAssignment.roomSlots[occSlotIndex] = newOccSlot;
+            logs.push(
+              `Shifting ${occEntry.provider.name} to ${deskById[newOccSlot.deskId]?.name || 'another desk'} to free a video-capable room for ${entry.provider.name}`
+            );
+            changed = true;
+            break swapSearch;
+          }
+        }
+      }
+    }
+    return changed;
+  };
+
   runFallbackPass();
 
   // ---- Phase 4 — cross-check / backtracking (rule #19) --------------------
@@ -881,12 +1077,17 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   // more times: a placement made late in the first pass (a provider shifted
   // to another desk, a nurse relocated after eviction) can open up a room
   // that an earlier-processed provider in that same pass had already given
-  // up on. Bounded to a handful of extra passes — once a pass makes no
-  // further change, everything reachable has been reached, so it stops
-  // rather than looping forever.
+  // up on. Interleaved with the #20 video-capable-backtracking pass, since
+  // either kind of change can open up a room the other kind would want —
+  // bounded to a handful of extra rounds, stops as soon as a round makes no
+  // further change at all, rather than looping forever.
   logs.push('Cross-checking all assignments…');
   let crossCheckPasses = 0;
-  while (crossCheckPasses < 4 && runFallbackPass()) {
+  let somethingChanged = true;
+  while (crossCheckPasses < 4 && somethingChanged) {
+    const fallbackChanged = runFallbackPass();
+    const videoChanged = tryImproveVideoCapableFit();
+    somethingChanged = fallbackChanged || videoChanged;
     crossCheckPasses += 1;
   }
 

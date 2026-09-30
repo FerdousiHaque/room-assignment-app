@@ -269,19 +269,45 @@ export function normalizeName(raw) {
   return cleaned.toLowerCase();
 }
 
+// A row's patient identifier, whatever the PDF's own MRN-ish column was
+// actually named — classifyHeader keeps an unrecognized header's own
+// literal text as the field name (e.g. a column literally titled "MRN"
+// lands on row.mrn), and real exports use a few different spellings for
+// the same thing, so check a short list of likely field names rather than
+// assuming exactly "mrn". Returns '' (never dedup-worthy) if none matched
+// or the row genuinely lacks one — a missing MRN must never be treated as
+// equal to another missing MRN.
+const MRN_FIELD_CANDIDATES = ['mrn', 'patientmrn', 'patientid', 'mrnnumber', 'mrn#'];
+function rowMrn(row) {
+  for (const field of MRN_FIELD_CANDIDATES) {
+    const v = row[field];
+    if (v && String(v).trim()) return String(v).trim().toLowerCase();
+  }
+  return '';
+}
+
 /**
  * Aggregates raw parsed rows (across all three uploaded desk files) into
  * one dayEntries array, matching each row's provider name against the
  * providers list. Rows with no matching provider are returned separately
  * as `unmatched` so the UI can surface them for a manual fix rather than
  * silently dropping patients.
+ *
+ * Duplicate-visit filtering: a same-provider row whose MRN was already
+ * seen for that provider is a duplicate of an earlier visit (e.g. the
+ * schedule accidentally lists the same appointment twice) and is skipped
+ * entirely here — before patientCount, session, or the video-visit flag
+ * are ever computed — so a duplicate can never inflate a patient count,
+ * shift AM/PM/FULL session detection, or otherwise affect room assignment.
+ * A row with no readable MRN at all is never treated as a duplicate of
+ * anything (there's nothing to compare), so it's always counted.
  */
 export function deriveDayEntries(rows, providers) {
   const byName = new Map(
     providers.map((p) => [normalizeName(`${p.lastName}, ${p.firstName}`), p])
   );
 
-  const grouped = new Map(); // providerId -> { patientCount, times: [], hasVideoVisit }
+  const grouped = new Map(); // providerId -> { patientCount, times: [], hasVideoVisit, seenMrns: Set }
   const unmatched = [];
 
   for (const row of rows) {
@@ -291,8 +317,15 @@ export function deriveDayEntries(rows, providers) {
       unmatched.push(row);
       continue;
     }
-    if (!grouped.has(provider.id)) grouped.set(provider.id, { patientCount: 0, times: [], hasVideoVisit: false });
+    if (!grouped.has(provider.id)) {
+      grouped.set(provider.id, { patientCount: 0, times: [], hasVideoVisit: false, seenMrns: new Set() });
+    }
     const g = grouped.get(provider.id);
+    const mrn = rowMrn(row);
+    if (mrn) {
+      if (g.seenMrns.has(mrn)) continue; // duplicate visit for this provider — ignore entirely
+      g.seenMrns.add(mrn);
+    }
     g.patientCount += 1;
     if (row.time) g.times.push(row.time);
     if (looksLikeVideoVisit(row)) g.hasVideoVisit = true;
@@ -321,7 +354,7 @@ export function deriveDayEntries(rows, providers) {
  * "any empty room" is the point.
  */
 export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
-  const grouped = new Map(); // "deskId||name" -> { deskId, name, patientCount, times }
+  const grouped = new Map(); // "deskId||name" -> { deskId, name, patientCount, times, seenMrns }
 
   for (const row of unmatchedRows) {
     // Trim FIRST, then fall back — a whitespace-only provider field (e.g.
@@ -331,8 +364,16 @@ export function buildUnmatchedProviderEntries(unmatchedRows, desks) {
     // be shown, never blank, even though it isn't in the Providers list.
     const name = (row.provider || '').trim() || 'Unknown provider';
     const key = `${row.deskId}||${normalizeName(name)}`;
-    if (!grouped.has(key)) grouped.set(key, { deskId: row.deskId, name, patientCount: 0, times: [] });
+    if (!grouped.has(key)) grouped.set(key, { deskId: row.deskId, name, patientCount: 0, times: [], seenMrns: new Set() });
     const g = grouped.get(key);
+    // Same duplicate-visit filtering as deriveDayEntries above — an
+    // unmatched name's duplicate MRN visit shouldn't inflate its patient
+    // count either.
+    const mrn = rowMrn(row);
+    if (mrn) {
+      if (g.seenMrns.has(mrn)) continue;
+      g.seenMrns.add(mrn);
+    }
     g.patientCount += 1;
     if (row.time) g.times.push(row.time);
   }
