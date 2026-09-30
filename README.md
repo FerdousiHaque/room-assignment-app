@@ -154,6 +154,16 @@ Page 2: static floor-map reference (Hall/Row/Side layout from the Rooms
 tab), room codes grouped into halls with office/utility labels or "V" for
 video-capable pool rooms.
 
+Name formatting in every exported page (`pdfGenerator.js`):
+- A room shared AM/PM by two different providers prints **both**, as
+  `LastName (AM)/LastName (PM)` (e.g. `Issa (AM)/Riad (PM)`) — occupancy is
+  tracked per AM/PM slot rather than one name per room, so the second
+  provider in a shared room no longer silently overwrites the first.
+- A `Doctor`-type provider always prints as `Dr. LastName` (never the full
+  name) everywhere a name appears in an export — a solo room, the "Not
+  assigned a room today" list, all of it. Every other type keeps printing
+  its full name, unchanged.
+
 ## Room Blocks — disabled, not deleted
 
 No UI tab; `App.jsx` always passes `roomBlocks: []`. Engine logic

@@ -224,7 +224,7 @@ export default function App() {
     // happened to be uploaded. Falls back to today only if no date could be
     // read off the PDF at all (or nothing's been submitted for this desk).
     const exportDate = scheduleDatesByDesk[desk.id] || date;
-    downloadDeskAssignmentPdf({ desk, date: exportDate, rooms: deskOnlyRooms, assignments: deskOnlyAssignments });
+    downloadDeskAssignmentPdf({ desk, date: exportDate, rooms: deskOnlyRooms, assignments: deskOnlyAssignments, providers });
   };
 
   // "Submit All": parses and saves all three desks' files in one shot, then
@@ -267,7 +267,7 @@ export default function App() {
       // previously known for this desk, then today, if this file had no
       // readable date at all.
       const exportDate = (scheduleDatesForAll && scheduleDatesForAll[desk.id]) || scheduleDatesByDesk[desk.id] || date;
-      downloadDeskAssignmentPdf({ desk, date: exportDate, rooms, assignments: realAll });
+      downloadDeskAssignmentPdf({ desk, date: exportDate, rooms, assignments: realAll, providers });
     }
   };
 

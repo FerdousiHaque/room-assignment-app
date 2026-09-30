@@ -45,60 +45,104 @@ export function deskNameForFilename(deskName) {
 
 // ---------- Per-desk export (current default) ----------
 
-export function generateDeskAssignmentPdf({ desk, date, rooms, assignments }) {
+export function generateDeskAssignmentPdf({ desk, date, rooms, assignments, providers = [] }) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
   const marginX = 48;
+  const providerById = Object.fromEntries(providers.map((p) => [p.id, p]));
 
   // Occupancy is looked up against the FULL assignments list (not just this
   // desk's own providers) — when "Submit All" ran, a room here may be filled
   // by a provider whose home desk is elsewhere but overflowed in, and that
   // should still show up as occupied on this desk's own grid.
   const deskRooms = rooms.filter((r) => r.deskId === desk.id);
-  const occupancy = buildRoomOccupancy(deskRooms, assignments);
+  const occupancy = buildRoomOccupancy(deskRooms, assignments, providerById);
 
   // Only this desk's own providers count for the "not assigned a room"
   // note below the grid — a provider who belongs to a different desk isn't
   // this desk's report's problem to flag.
   const deskAssignments = assignments.filter((a) => a.homeDeskId === desk.id);
 
-  drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignments, marginX });
+  drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignments, providerById, marginX });
 
   return doc;
 }
 
-/** roomId -> { providerName, isOverflow } for every room in `deskRooms` that has someone in it today, scanning every assignment's room slots (not just ones whose home desk is this one — see the comment above). */
-function buildRoomOccupancy(deskRooms, assignments) {
+// A Doctor-type provider always prints as "Dr. <LastName>" in exports
+// (never the full name); every other type keeps printing their full name,
+// exactly as before. `fallbackName` (the assignment's own providerName) is
+// used only if the provider record itself couldn't be found (shouldn't
+// normally happen, since pseudo/unmatched entries are filtered out of
+// exports before they ever reach here).
+function exportDisplayName(provider, fallbackName) {
+  if (!provider) return fallbackName;
+  const lastName = (provider.lastName || '').trim();
+  if (provider.type === 'Doctor' && lastName) return `Dr. ${lastName}`;
+  const firstName = (provider.firstName || '').trim();
+  return [firstName, lastName].filter(Boolean).join(' ') || fallbackName;
+}
+
+// Last-name-only, used specifically for the compact "Issa (AM)/Riad (PM)"
+// shared-room format — kept separate from exportDisplayName so a shared
+// cell never has to fit two full "Dr. First Last" names side by side.
+function exportLastName(provider, fallbackName) {
+  if (!provider) return fallbackName;
+  return (provider.lastName || '').trim() || fallbackName;
+}
+
+function occupantCellLabel(occ) {
+  const label = exportDisplayName(occ.provider, occ.providerName);
+  return occ.isOverflow ? `${label} *` : label;
+}
+
+function sharedOccupantLabel(occ) {
+  const label = exportLastName(occ.provider, occ.providerName);
+  return occ.isOverflow ? `${label}*` : label;
+}
+
+/**
+ * roomId -> { AM: occ|null, PM: occ|null, FULL: occ|null } for every room in
+ * `deskRooms` that has someone in it today (occ = { provider, providerName,
+ * isOverflow }), scanning every assignment's room slots (not just ones whose
+ * home desk is this one — see the comment above). Tracking AM and PM
+ * separately (instead of one name per room) is what makes a shared room
+ * show BOTH occupants instead of one silently overwriting the other.
+ */
+function buildRoomOccupancy(deskRooms, assignments, providerById) {
   const deskRoomIds = new Set(deskRooms.map((r) => r.id));
   const occupancy = new Map();
   for (const a of assignments) {
+    const provider = providerById[a.providerId];
     for (const slot of a.roomSlots || []) {
       if (slot.roomId && deskRoomIds.has(slot.roomId)) {
-        occupancy.set(slot.roomId, { providerName: a.providerName, isOverflow: slot.isOverflow });
+        if (!occupancy.has(slot.roomId)) occupancy.set(slot.roomId, {});
+        occupancy.get(slot.roomId)[a.session] = { provider, providerName: a.providerName, isOverflow: slot.isOverflow };
       }
     }
   }
   return occupancy;
 }
 
-export function downloadDeskAssignmentPdf({ desk, date, rooms, assignments }) {
-  const doc = generateDeskAssignmentPdf({ desk, date, rooms, assignments });
+export function downloadDeskAssignmentPdf({ desk, date, rooms, assignments, providers = [] }) {
+  const doc = generateDeskAssignmentPdf({ desk, date, rooms, assignments, providers });
   const fileName = `${deskNameForFilename(desk.name)}_${formatDateForFilename(date)}.pdf`;
   doc.save(fileName);
 }
 
 // ---------- Combined all-desks export (kept for reference; unused by the UI) ----------
 
-export function generateAssignmentPdf({ date, desks, rooms, assignments }) {
+export function generateAssignmentPdf({ date, desks, rooms, assignments, providers = [] }) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
   const marginX = 48;
   const roomById = Object.fromEntries(rooms.map((r) => [r.id, r]));
   const deskById = Object.fromEntries(desks.map((d) => [d.id, d]));
+  const providerById = Object.fromEntries(providers.map((p) => [p.id, p]));
 
   drawProviderSummaryPage(doc, {
     title: 'Provider Assignment Report',
     date,
     assignments,
     roomById,
+    providerById,
     marginX,
     showDeskColumn: true,
     deskById
@@ -119,7 +163,7 @@ export function downloadAssignmentPdf(args) {
 
 // ---------- Shared drawing helpers ----------
 
-function drawProviderSummaryPage(doc, { title, date, assignments, roomById, deskById, marginX, showDeskColumn }) {
+function drawProviderSummaryPage(doc, { title, date, assignments, roomById, deskById, providerById = {}, marginX, showDeskColumn }) {
   let cursorY = 56;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(16);
@@ -150,7 +194,7 @@ function drawProviderSummaryPage(doc, { title, date, assignments, roomById, desk
       doc.addPage();
       cursorY = 56;
     }
-    doc.text(a.providerName, colX.name, cursorY);
+    doc.text(exportDisplayName(providerById[a.providerId], a.providerName), colX.name, cursorY);
     if (showDeskColumn) doc.text(deskById[a.homeDeskId]?.name || '—', colX.desk, cursorY);
     doc.text(a.session, colX.session, cursorY);
 
@@ -182,7 +226,7 @@ function formatSlot(slot, roomById) {
 // a blank/video-capable marker, so the page is always the full room list —
 // never a bare "no providers scheduled" line.
 
-/** A room -> what to print in its two cells (room number, label/marker), given who (if anyone) is in it today. */
+/** A room -> what to print in its two cells (room number, label/marker), given who (if anyone) is in it today. A room shared AM/PM by two different providers prints BOTH, as "LastName (AM)/LastName (PM)" — see buildRoomOccupancy/sharedOccupantLabel. */
 function resolveOccupiedCell(room, occupancy) {
   if (!room) return { code: '', label: '' };
   if (room.kind === 'office' || room.kind === 'utility') {
@@ -190,9 +234,13 @@ function resolveOccupiedCell(room, occupancy) {
     // their fixed label, same as the static floor map.
     return { code: room.code || '', label: room.label || '' };
   }
-  const occupant = occupancy.get(room.id);
-  if (occupant) {
-    return { code: room.code || '', label: occupant.isOverflow ? `${occupant.providerName} *` : occupant.providerName };
+  const occ = occupancy.get(room.id);
+  if (occ) {
+    if (occ.AM && occ.PM) {
+      return { code: room.code || '', label: `${sharedOccupantLabel(occ.AM)} (AM)/${sharedOccupantLabel(occ.PM)} (PM)` };
+    }
+    const solo = occ.FULL || occ.AM || occ.PM;
+    if (solo) return { code: room.code || '', label: occupantCellLabel(solo) };
   }
   // Nobody in it today: fall back to the same static marker the floor map
   // uses ("V" for video-capable, blank otherwise) rather than leaving it
@@ -279,10 +327,12 @@ function drawSimpleOccupiedRoomList(doc, { deskRooms, occupancy, marginX, cursor
       doc.addPage();
       y = 56;
     }
-    const occupant = occupancy.get(room.id);
+    const occ = occupancy.get(room.id);
     let value;
-    if (occupant) {
-      value = occupant.isOverflow ? `${occupant.providerName} *` : occupant.providerName;
+    if (occ && occ.AM && occ.PM) {
+      value = `${sharedOccupantLabel(occ.AM)} (AM)/${sharedOccupantLabel(occ.PM)} (PM)`;
+    } else if (occ && (occ.FULL || occ.AM || occ.PM)) {
+      value = occupantCellLabel(occ.FULL || occ.AM || occ.PM);
     } else if (room.kind === 'office' || room.kind === 'utility') {
       value = room.label || '—';
     } else {
@@ -296,7 +346,7 @@ function drawSimpleOccupiedRoomList(doc, { deskRooms, occupancy, marginX, cursor
   return y;
 }
 
-function drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignments, marginX }) {
+function drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignments, providerById, marginX }) {
   const { order: halls, byHall } = groupRoomsByHall(deskRooms);
 
   let cursorY = 56;
@@ -355,7 +405,8 @@ function drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignmen
         doc.addPage();
         cursorY = 56;
       }
-      doc.text(`• ${a.providerName} (${a.session})`, marginX, cursorY);
+      const name = exportDisplayName(providerById?.[a.providerId], a.providerName);
+      doc.text(`• ${name} (${a.session})`, marginX, cursorY);
       cursorY += 14;
     }
   }
