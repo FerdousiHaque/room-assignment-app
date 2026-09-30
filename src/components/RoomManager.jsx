@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog.jsx';
 
 const emptyDraft = {
@@ -32,6 +32,15 @@ export default function RoomManager({ rooms, desks, onChange }) {
   // Id of the room awaiting delete confirmation, or null when the confirm
   // popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  // Same auto-scroll as ProviderManager.jsx — for the LAST row, the inline
+  // edit form renders right where the (now-hidden) "Add room" section used
+  // to be, which reads as an overlap without a scroll nudge into view.
+  const editRowRef = useRef(null);
+  useEffect(() => {
+    if (editingId !== null && editRowRef.current) {
+      editRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [editingId]);
   // Column sort, toggled by clicking a sortable header: column is null (the
   // table's default order — see sortedRooms below, room code ascending) or
   // 'code' / 'desk'; clicking the active column flips 'asc' -> 'desc' ->
@@ -306,7 +315,7 @@ export default function RoomManager({ rooms, desks, onChange }) {
                 </td>
               </tr>
               {editingId === r.id && (
-                <tr className="inline-edit-row">
+                <tr className="inline-edit-row" ref={editRowRef}>
                   <td colSpan={columnCount}>
                     <div className="provider-form inline">
                       <h3>Edit room</h3>

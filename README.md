@@ -199,7 +199,17 @@ feedback that it wasn't working as expected).
   ascending room-code order, and are mutually exclusive (picking a room in
   one clears it from the other if duplicated) — no adjacency filtering here
   (see the two-room adjacency rule above: it's an assignment-time fallback
-  only, not a form constraint).
+  only, not a form constraint). Changing a provider's **Default desk** away
+  from a desk that's currently checked as one of their "Alternate desks"
+  automatically drops it from that list too (a desk can't be its own
+  alternate) — previously this stale entry was left behind, which could
+  make the "Alt desks"/"Alt desk rooms" columns show a value tied to a desk
+  that's no longer actually an alternate once the default desk changed to
+  it. Editing the table's **last row** scrolls its inline edit form
+  smoothly into view — since the "Add" section is hidden while any row is
+  being edited, the edit form for the last row renders in the exact screen
+  space the "Add" section occupied a moment before, which without a scroll
+  nudge could read as the two overlapping.
 
 ## Provider fields
 
@@ -255,15 +265,34 @@ every room shown whether or not anyone's assigned there today, plus a
 missing slot. An unoccupied exam room prints **blank** — no "window" /
 "video-capable" descriptor and no "Empty" placeholder text — so an unfilled
 room reads as genuinely empty rather than advertising capabilities nobody's
-using today. (The older combined, all-desks, two-page report+floor-map
-export — `generateAssignmentPdf`/`drawFloorMapPage` — is kept in
-`pdfGenerator.js` for reference but isn't called by the UI.)
+using today. When a desk's rooms are grouped into exactly **two halls**,
+both hall tables print one after another (full page width each), not side
+by side — side-by-side squeezed each table into half the page, which
+cramped longer labels (a shared office, or a name plus an AM/PM or Time
+note); stacked, each table gets the full content width and a slightly
+larger font (10pt cell text / 14pt hall title / 28pt row height, vs. 8pt /
+12pt / 26pt elsewhere) to actually use the extra room. Desks with 0, 1, or
+3+ halls are unaffected. (The older combined, all-desks, two-page
+report+floor-map export — `generateAssignmentPdf`/`drawFloorMapPage` — is
+kept in `pdfGenerator.js` for reference but isn't called by the UI, and
+still prints two halls side by side there since nothing calls it.)
 
 Name formatting in every exported page (`pdfGenerator.js`):
 - A room shared AM/PM by two different providers prints **both**, as
   `LastName (AM)/LastName (PM)` (e.g. `Issa (AM)/Riad (PM)`) — occupancy is
   tracked per AM/PM slot rather than one name per room, so the second
   provider in a shared room no longer silently overwrites the first.
+- A **solo** occupant (not sharing) also gets a note next to their name now
+  (`occupantCellLabel`): if they only have patients for **half a day**
+  (session is AM-only or PM-only, not a full day), the same `(AM)`/`(PM)`
+  note a shared room already shows — even though they're alone in the
+  room. If instead they have exactly **one patient for the whole day**
+  (session is FULL and `patientCount === 1`), their raw imported **Time**
+  value prints next to their name instead (e.g. `Onepatient (11:30 am)`) —
+  never the "Arrive By" field. The two notes never combine (a same-day
+  single patient is always the FULL case, never AM/PM-only). Both `session`
+  and `patientCount`/`soloTime` are carried on the occupancy entry built by
+  `buildRoomOccupancy` specifically so `occupantCellLabel` can see them.
 - A `Doctor`-type provider always prints as `Dr. LastName` (never the full
   name) everywhere a name appears in an export — a solo room, the "Not
   assigned a room today" list, all of it. Every other type keeps printing

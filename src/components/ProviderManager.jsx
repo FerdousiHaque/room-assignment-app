@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ConfirmDialog from './ConfirmDialog.jsx';
 
 const emptyDraft = {
@@ -70,6 +70,20 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState(null);
+  // The inline edit row is only ever below the row being edited — for the
+  // LAST row that means it renders right at the very bottom of the table,
+  // in the same screen space the (now-hidden) "Add provider" section
+  // occupied a moment before. With no scroll adjustment that reads as the
+  // edit form "overlapping" the Add section, since the page doesn't move
+  // and the edit form just appears where Add used to be. Scrolling the
+  // freshly-opened edit row into view (a little padding below it, via
+  // scroll-margin-bottom in CSS) makes the transition unambiguous instead.
+  const editRowRef = useRef(null);
+  useEffect(() => {
+    if (editingId !== null && editRowRef.current) {
+      editRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [editingId]);
   // Id of the provider awaiting delete confirmation, or null when the
   // confirm popup is closed — Delete never removes anything by itself.
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
@@ -240,7 +254,15 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
                 : '',
               secondPreferredRoomId: roomsForDesk(e.target.value).some((r) => r.id === d.secondPreferredRoomId)
                 ? d.secondPreferredRoomId
-                : ''
+                : '',
+              // A desk can't be its own alternate — if the new default desk
+              // was previously checked as an alternate desk, drop it from
+              // that list too, rather than silently keeping a stale entry
+              // that's now identical to the home desk (this was previously
+              // left as-is, so the "Alt desks"/"Alt desk rooms" columns
+              // could keep showing a value tied to a desk that's no longer
+              // actually an alternate once the default desk changed to it).
+              alternateDeskIds: d.alternateDeskIds.filter((id) => id !== e.target.value)
             }))
           }
         >
@@ -460,7 +482,7 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
                 </td>
               </tr>
               {editingId === p.id && (
-                <tr className="inline-edit-row">
+                <tr className="inline-edit-row" ref={editRowRef}>
                   <td colSpan={columnCount}>
                     <div className="provider-form inline">
                       <h3>Edit provider</h3>

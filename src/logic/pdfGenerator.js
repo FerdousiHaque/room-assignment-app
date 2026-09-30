@@ -89,8 +89,24 @@ function exportLastName(provider, fallbackName) {
   return (provider.lastName || '').trim() || fallbackName;
 }
 
+// A solo occupant's label gets one extra note beside their name, in this
+// priority order:
+//   1. Full-day AND exactly one patient today -> the raw imported Time
+//      value (e.g. "10:15 am"), never "Arrive By" — see soloTime in
+//      pdfParser.js/assignmentEngine.js.
+//   2. Half-day only (AM-only or PM-only, not a full day) -> "(AM)"/"(PM)",
+//      same note a shared room already shows per occupant, now also shown
+//      for a SOLO provider who isn't sharing with anyone.
+// The two never apply together: a same-day single patient is (by
+// definition) either AM or PM, which is a full day's worth of care either
+// way for that provider — soloTime only fires for the FULL session case.
 function occupantCellLabel(occ) {
-  const label = exportDisplayName(occ.provider, occ.providerName);
+  let label = exportDisplayName(occ.provider, occ.providerName);
+  if (occ.patientCount === 1 && occ.session === 'FULL' && occ.soloTime) {
+    label += ` (${occ.soloTime})`;
+  } else if (occ.session === 'AM' || occ.session === 'PM') {
+    label += ` (${occ.session})`;
+  }
   return occ.isOverflow ? `${label} *` : label;
 }
 
@@ -115,7 +131,18 @@ function buildRoomOccupancy(deskRooms, assignments, providerById) {
     for (const slot of a.roomSlots || []) {
       if (slot.roomId && deskRoomIds.has(slot.roomId)) {
         if (!occupancy.has(slot.roomId)) occupancy.set(slot.roomId, {});
-        occupancy.get(slot.roomId)[a.session] = { provider, providerName: a.providerName, isOverflow: slot.isOverflow };
+        occupancy.get(slot.roomId)[a.session] = {
+          provider,
+          providerName: a.providerName,
+          isOverflow: slot.isOverflow,
+          // Carried through for occupantCellLabel's AM/PM-note and
+          // solo-Time-note logic (see there) — self-contained on the occ
+          // object so it works the same whether looked up via occ.FULL,
+          // occ.AM, or occ.PM.
+          session: a.session,
+          patientCount: a.patientCount,
+          soloTime: a.soloTime
+        };
       }
     }
   }
@@ -226,7 +253,7 @@ function formatSlot(slot, roomById) {
 // a blank/video-capable marker, so the page is always the full room list —
 // never a bare "no providers scheduled" line.
 
-/** A room -> what to print in its two cells (room number, label/marker), given who (if anyone) is in it today. A room shared AM/PM by two different providers prints BOTH, as "LastName (AM)/LastName (PM)" — see buildRoomOccupancy/sharedOccupantLabel. */
+/** A room -> what to print in its two cells (room number, label/marker), given who (if anyone) is in it today. A room shared AM/PM by two different providers prints BOTH, as "LastName (AM)/LastName (PM)" — see buildRoomOccupancy/sharedOccupantLabel. A SOLO occupant also gets a note next to their name now: "(AM)"/"(PM)" if they're only in for a half day, or their actual imported Time if they're a full-day provider with exactly one patient — see occupantCellLabel. */
 function resolveOccupiedCell(room, occupancy) {
   if (!room) return { code: '', label: '' };
   if (room.kind === 'office' || room.kind === 'utility') {
@@ -248,8 +275,16 @@ function resolveOccupiedCell(room, occupancy) {
   return { code: room.code || '', label: room.videoCapable ? 'V' : '' };
 }
 
-/** Same drawing as drawHallTable, but cells come from resolveOccupiedCell so today's assignments show through. */
-function drawOccupiedHallTable(doc, { hall, hallRooms, occupancy, x, y, width }) {
+/**
+ * Same drawing as drawHallTable, but cells come from resolveOccupiedCell so
+ * today's assignments show through. `fontSize`/`titleFontSize`/`rowHeight`
+ * default to the original compact side-by-side sizing but can be bumped up
+ * by the caller — see drawRoomGridPage's two-hall case, which now stacks
+ * the two tables one after another (full page width each) instead of
+ * side by side, and passes larger sizes to actually use that extra width
+ * instead of leaving it as unused padding.
+ */
+function drawOccupiedHallTable(doc, { hall, hallRooms, occupancy, x, y, width, fontSize = 8, titleFontSize = 12, rowHeight = 26 }) {
   const byRow = new Map();
   let maxRow = 0;
   for (const r of hallRooms) {
@@ -262,10 +297,10 @@ function drawOccupiedHallTable(doc, { hall, hallRooms, occupancy, x, y, width })
   const numW = width * 0.12;
   const labelW = width * 0.38;
   const colX = [x, x + numW, x + numW + labelW, x + numW + labelW + numW];
-  const rowH = 26;
+  const rowH = rowHeight;
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(12);
+  doc.setFontSize(titleFontSize);
   doc.setTextColor(...NAVY);
   doc.text(hall, x + width / 2, y, { align: 'center' });
 
@@ -287,17 +322,17 @@ function drawOccupiedHallTable(doc, { hall, hallRooms, occupancy, x, y, width })
     const textY = cursorY + rowH / 2 + 3;
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
+    doc.setFontSize(fontSize);
     doc.text(left.code, colX[0] + 4, textY);
     doc.text(right.code, colX[2] + 4, textY);
 
     const labelMaxWidth = labelW - 8;
     if (left.label) {
-      fitLabelFont(doc, left.label, labelMaxWidth, 8);
+      fitLabelFont(doc, left.label, labelMaxWidth, fontSize);
       doc.text(left.label, colX[1] + 4, textY);
     }
     if (right.label) {
-      fitLabelFont(doc, right.label, labelMaxWidth, 8);
+      fitLabelFont(doc, right.label, labelMaxWidth, fontSize);
       doc.text(right.label, colX[3] + 4, textY);
     }
 
@@ -368,13 +403,30 @@ function drawRoomGridPage(doc, { desk, date, deskRooms, occupancy, deskAssignmen
     cursorY = drawSimpleOccupiedRoomList(doc, { deskRooms, occupancy, marginX, cursorY });
   } else {
     const contentWidth = PAGE_RIGHT - marginX;
-    const gap = 24;
 
     if (halls.length === 2) {
-      const hallWidth = (contentWidth - gap) / 2;
-      const bottom1 = drawOccupiedHallTable(doc, { hall: halls[0], hallRooms: byHall.get(halls[0]), occupancy, x: marginX, y: cursorY, width: hallWidth });
-      const bottom2 = drawOccupiedHallTable(doc, { hall: halls[1], hallRooms: byHall.get(halls[1]), occupancy, x: marginX + hallWidth + gap, y: cursorY, width: hallWidth });
-      cursorY = Math.max(bottom1, bottom2);
+      // Two halls print one after another at full page width, not side by
+      // side — side by side squeezed each table into half the page, which
+      // cramped longer labels (a shared office, a name plus an AM/PM or
+      // Time note). Stacked, each table gets the full content width, and
+      // the font is bumped up to actually use that extra room.
+      for (const hallName of halls) {
+        if (cursorY > 700) {
+          doc.addPage();
+          cursorY = 56;
+        }
+        cursorY = drawOccupiedHallTable(doc, {
+          hall: hallName,
+          hallRooms: byHall.get(hallName),
+          occupancy,
+          x: marginX,
+          y: cursorY,
+          width: contentWidth,
+          fontSize: 10,
+          titleFontSize: 14,
+          rowHeight: 28
+        }) + 20;
+      }
     } else {
       for (const hallName of halls) {
         if (cursorY > 700) {
