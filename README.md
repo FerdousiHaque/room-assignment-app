@@ -56,14 +56,18 @@ Runs in this order for a given date:
    once or it's rolled back (`release()`) and the next desk is tried. A
    provider's rooms are never split across two desks in this pass — but see
    the fallback-fill pass below, which can still fill an unsplit remainder.
-6. **Two-room adjacency** — a provider with `preferredNumberOfRooms: 2`
-   always gets two rooms "beside each other": same letter suffix, room
-   numbers exactly 2 apart (`22E`/`24E`, `63E`/`65E`, `30`/`32`). The second
-   room is only ever picked adjacent to whichever room the first one
-   *actually* received; if the first couldn't be placed, the second is left
-   unfilled rather than assigned on its own. Enforced here and in the
-   Providers form, where the Second Preferred Room dropdown only offers
-   rooms adjacent to the selected Primary.
+6. **Two-room adjacency (fallback only)** — when the system has to pick a
+   provider's second room itself, the two rooms must be "beside each
+   other": same letter suffix, room numbers exactly 2 apart (`22E`/`24E`,
+   `63E`/`65E`, `30`/`32`). This is tried in order: (1) `secondPreferredRoomId`,
+   if it's a room at that desk and open — used exactly as configured, **no**
+   adjacency check; (2) `otherPreferredRoomCodes`, same — matched and used
+   as-is, no adjacency check; (3) only once neither of those could be used,
+   falls back to any open room adjacent to whatever the first room actually
+   received. The Providers form does **not** filter the Second Preferred
+   Room dropdown by adjacency — it only excludes whichever room is already
+   picked as Primary — since an explicitly configured Second Preferred Room
+   is always honored as typed, adjacent or not.
 7. **Fallback fill** (last resort, once after every tier) — no working,
    non-fixed provider is left missing a room while a genuinely open one
    exists anywhere. Searches every desk (home, then `alternateDeskIds` by
@@ -113,11 +117,10 @@ shown in the UI's Logs box (see below).
   ascending, shown as `Last, First`; Rooms default-sort by room code
   ascending. Primary/Second preferred room dropdowns only ever list
   exam-kind rooms at the provider's selected default desk, always in
-  ascending room-code order; they're mutually exclusive (picking a room in
-  one clears it from the other if duplicated), and when
-  `preferredNumberOfRooms` is 2, Second is additionally filtered to only
-  rooms adjacent to whichever room is picked as Primary (disabled until one
-  is picked).
+  ascending room-code order, and are mutually exclusive (picking a room in
+  one clears it from the other if duplicated) — no adjacency filtering here
+  (see the two-room adjacency rule above: it's an assignment-time fallback
+  only, not a form constraint).
 
 ## Provider fields
 

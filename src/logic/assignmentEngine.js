@@ -89,17 +89,25 @@
  *    (but not all) of a provider's rooms, the rest are left unfilled here
  *    rather than sent anywhere else during this pass — see #18, which can
  *    still pick them up as a last resort.
- * 17. NEW — provider.preferredNumberOfRooms === 2: the two rooms must
- *    always be "beside each other" — same letter suffix and room numbers
- *    exactly 2 apart (so always both odd or both even), e.g. 22E/24E,
- *    63E/65E, 30/32 (see parseRoomCode/roomsAdjacent). Slot 1 (the second
- *    room) is only ever assigned a room adjacent to whatever room slot 0
- *    ACTUALLY received — not just the provider's stored
- *    secondPreferredRoomId. If slot 0 couldn't be placed, slot 1 is left
- *    unfilled too rather than assigning an unpaired room. Enforced both
- *    here and in the Providers form (ProviderManager.jsx), where the
- *    Second Preferred Room dropdown only offers rooms adjacent to whichever
- *    Primary Preferred Room is currently selected.
+ * 17. NEW — provider.preferredNumberOfRooms === 2: when the system has to
+ *    pick the second room itself (see pickSlotRoom), the two rooms must be
+ *    "beside each other" — same letter suffix and room numbers exactly 2
+ *    apart (so always both odd or both even), e.g. 22E/24E, 63E/65E, 30/32
+ *    (see parseRoomCode/roomsAdjacent). This is a FALLBACK rule only,
+ *    applied in this order for slot 1:
+ *      1. provider.secondPreferredRoomId, if it's a room at the desk being
+ *         tried and open — used exactly as configured, no adjacency check.
+ *      2. provider.otherPreferredRoomCodes, if any match a room at that
+ *         desk and it's open — same, no adjacency check.
+ *      3. Only once neither of those could be used: falls back to any open
+ *         room adjacent to whatever room slot 0 ACTUALLY received. If
+ *         there's no such room (or slot 0 wasn't placed at all), slot 1 is
+ *         left unfilled rather than assigning an unpaired room.
+ *    The Providers form (ProviderManager.jsx) does NOT filter the Second
+ *    Preferred Room dropdown by adjacency — it only excludes whichever room
+ *    is already picked as Primary, same as before this rule existed, since
+ *    an explicitly configured Second Preferred Room is always honored as-is
+ *    (step 1 above), whether or not it happens to be adjacent.
  * 18. NEW — fallback fill (last resort, runs once after every priority tier
  *    has been placed): no working, non-fixed provider is left with a
  *    missing room while a genuinely usable room exists anywhere. This pass
@@ -329,11 +337,16 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   };
 
   // `requireAdjacentToCode`, when set, hard-filters candidates to only
-  // rooms adjacent (rule #17) to that room code, before any scoring runs —
-  // used for a two-room provider's second room, anchored to whatever room
-  // the first one actually got.
-  const pickRoom = (deskId, entry, preferredRoomId, alreadyPicked, requireAdjacentToCode = null) => {
+  // rooms adjacent (rule #17) to that room code, before any scoring runs.
+  // `restrictToRoomIds`, when set, further narrows candidates to exactly
+  // that set (e.g. the rooms matching a provider's otherPreferredRoomCodes
+  // at this desk) before scoring picks the best of them.
+  const pickRoom = (deskId, entry, preferredRoomId, alreadyPicked, requireAdjacentToCode = null, restrictToRoomIds = null) => {
     let candidates = (roomsByDesk[deskId] || []).filter((id) => canFit(id, entry.session));
+    if (restrictToRoomIds) {
+      const allowed = new Set(restrictToRoomIds);
+      candidates = candidates.filter((id) => allowed.has(id));
+    }
     if (requireAdjacentToCode) {
       candidates = candidates.filter((id) => roomsAdjacent(roomState[id].room.code, requireAdjacentToCode));
     }
@@ -348,36 +361,70 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     slotIndex === 0 ? entry.provider.primaryPreferredRoomId : slotIndex === 1 ? entry.provider.secondPreferredRoomId : null;
 
   /**
+   * Picks a room for one slot of `entry` at `deskId`. Slot 0 is always a
+   * plain preference-scored pick (primaryPreferredRoomId, if set, scores
+   * highest — see scoreRoom — but any open room can still be picked).
+   *
+   * Slot 1 of a two-room provider (rule #17) tries, in order:
+   *   1. secondPreferredRoomId, if it's a room at THIS desk and open — used
+   *      exactly as configured, no adjacency check at all.
+   *   2. otherPreferredRoomCodes, if any match a room at this desk and it's
+   *      open — same, no adjacency check.
+   *   3. Only once neither of those panned out: the system falls back to
+   *      picking any open room ADJACENT to whatever slot 0 actually
+   *      received (`anchorCode`) — this is the only place adjacency is
+   *      enforced. If there's no anchor (slot 0 wasn't placed) or no
+   *      adjacent room is open, slot 1 is left unfilled rather than
+   *      assigning an unpaired room.
+   */
+  const pickSlotRoom = (deskId, entry, slotIndex, alreadyPicked, anchorCode) => {
+    const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+    if (!need2 || slotIndex !== 1) {
+      return pickRoom(deskId, entry, slotPreferredRoomId(entry, slotIndex), alreadyPicked);
+    }
+
+    const secondId = entry.provider.secondPreferredRoomId;
+    if (
+      secondId &&
+      !alreadyPicked.includes(secondId) &&
+      roomState[secondId]?.room.deskId === deskId &&
+      canFit(secondId, entry.session)
+    ) {
+      return secondId;
+    }
+
+    const otherCodes = entry.provider.otherPreferredRoomCodes || [];
+    if (otherCodes.length > 0) {
+      const matchIds = (roomsByDesk[deskId] || []).filter((id) => otherCodes.includes(roomState[id].room.code));
+      if (matchIds.length > 0) {
+        const picked = pickRoom(deskId, entry, null, alreadyPicked, null, matchIds);
+        if (picked) return picked;
+      }
+    }
+
+    // Neither the second preferred room nor the "other set of rooms" could
+    // be used — fall back to the adjacency rule as a last resort.
+    if (!anchorCode) return null;
+    return pickRoom(deskId, entry, null, alreadyPicked, anchorCode);
+  };
+
+  /**
    * Attempts to fill `count` room slots for `entry` at `deskId`, starting
    * at `slotOffset` (so slot preferences line up correctly when this is
    * called again during overflow for just the still-missing slots).
    * `anchorCode`, when `slotOffset` starts past slot 0 (i.e. slot 0 was
    * already placed by an earlier call, possibly at a different desk),
-   * carries that room's code so slot 1 can still be checked for adjacency
-   * (rule #17) against it.
+   * carries that room's code so slot 1's adjacency fallback (see
+   * pickSlotRoom) still has something to check against.
    * Returns an array of { roomId: string|null, deskId, isOverflow }.
    */
   const placeSlots = (deskId, entry, count, slotOffset, isOverflow, anchorCode = null) => {
     const results = [];
     const pickedSoFar = [];
-    const need = entry.provider.preferredNumberOfRooms || 1;
     for (let i = 0; i < count; i++) {
       const slotIndex = slotOffset + i;
-      const preferredRoomId = slotPreferredRoomId(entry, slotIndex);
-
-      let requireAdjacentToCode = null;
-      if (need === 2 && slotIndex === 1) {
-        requireAdjacentToCode = pickedSoFar.length > 0 ? roomState[pickedSoFar[0]]?.room.code : anchorCode;
-        if (!requireAdjacentToCode) {
-          // Slot 0 hasn't actually been secured (in this call or before
-          // it) — there's nothing to pair slot 1 with, so leave it unfilled
-          // rather than assigning an unpaired room (rule #17).
-          results.push({ roomId: null, deskId: null, isOverflow: false });
-          continue;
-        }
-      }
-
-      const roomId = pickRoom(deskId, entry, preferredRoomId, pickedSoFar, requireAdjacentToCode);
+      const currentAnchor = pickedSoFar.length > 0 ? roomState[pickedSoFar[0]]?.room.code : anchorCode;
+      const roomId = pickSlotRoom(deskId, entry, slotIndex, pickedSoFar, currentAnchor);
       if (roomId) {
         occupy(roomId, entry.session, entry.providerId);
         pickedSoFar.push(roomId);
@@ -587,6 +634,29 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return ordered;
   };
 
+  // Same priority order as pickSlotRoom's slot-1 rule, but returns every
+  // eligible room id (not just an open one) so the eviction pass below can
+  // also consider bumping someone out of a named preference before it ever
+  // considers an adjacency-only candidate: secondPreferredRoomId / matching
+  // otherPreferredRoomCodes rooms at this desk first (if any exist at all),
+  // then — only when none exist — rooms adjacent to `anchorCode`.
+  const slotEligibleRoomIds = (deskId, entry, slotIndex, anchorCode) => {
+    const allIds = roomsByDesk[deskId] || [];
+    const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+    if (!need2 || slotIndex !== 1) return allIds;
+
+    const named = [];
+    const secondId = entry.provider.secondPreferredRoomId;
+    if (secondId && roomState[secondId]?.room.deskId === deskId) named.push(secondId);
+    const otherCodes = entry.provider.otherPreferredRoomCodes || [];
+    for (const id of allIds) {
+      if (!named.includes(id) && otherCodes.includes(roomState[id].room.code)) named.push(id);
+    }
+    if (named.length > 0) return named;
+    if (!anchorCode) return [];
+    return allIds.filter((id) => roomsAdjacent(roomState[id].room.code, anchorCode));
+  };
+
   // Returns the evictable Nurse (if any) occupying `roomId` during
   // `neededSession` — never a Doctor/Fellow/Any-type provider, and never a
   // fixed-room reservation with patients that day.
@@ -617,12 +687,10 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     let anchorCode = null;
     if (need2 && hit.slotIndex === 1) {
       const slot0RoomId = nurseAssignment.roomSlots[0]?.roomId;
-      if (!slot0RoomId) return; // nothing to pair with — leave unfilled
-      anchorCode = roomState[slot0RoomId]?.room.code || null;
-      if (!anchorCode) return;
+      anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
     }
     for (const desk of deskSearchOrder(nurseEntry)) {
-      const roomId = pickRoom(desk.id, nurseEntry, slotPreferredRoomId(nurseEntry, hit.slotIndex), [], anchorCode);
+      const roomId = pickSlotRoom(desk.id, nurseEntry, hit.slotIndex, [], anchorCode);
       if (roomId) {
         occupy(roomId, nurseEntry.session, nurseEntry.providerId);
         nurseAssignment.roomSlots[hit.slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== nurseEntry.provider.homeDeskId };
@@ -663,16 +731,16 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         let anchorCode = null;
         if (need2 && slotIndex === 1) {
           const slot0RoomId = assignment.roomSlots[0]?.roomId;
-          if (!slot0RoomId) continue; // nothing to pair slot 1 with — leave unfilled
-          anchorCode = roomState[slot0RoomId]?.room.code || null;
-          if (!anchorCode) continue;
+          anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
         }
 
-        // First pass: any already-open room, no eviction.
+        // First pass: any already-open room, no eviction. pickSlotRoom
+        // itself tries secondPreferredRoomId / otherPreferredRoomCodes
+        // before ever falling back to the anchorCode adjacency rule.
         let filled = false;
         for (const desk of deskSearchOrder(entry)) {
           logDeskStart(desk);
-          const roomId = pickRoom(desk.id, entry, slotPreferredRoomId(entry, slotIndex), [], anchorCode);
+          const roomId = pickSlotRoom(desk.id, entry, slotIndex, [], anchorCode);
           if (roomId) {
             occupy(roomId, entry.session, entry.providerId);
             assignment.roomSlots[slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
@@ -685,11 +753,11 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
         // Second pass: nothing open anywhere — try bumping a Nurse (never
         // for a Nurse or pseudo entry itself) out of a room that would fit.
+        // Same priority order as above: a named preference room is tried
+        // for eviction before an adjacency-only candidate.
         if (!filled && allowEvict) {
           outer: for (const desk of deskSearchOrder(entry)) {
-            const roomIds = (roomsByDesk[desk.id] || []).filter(
-              (id) => !anchorCode || roomsAdjacent(roomState[id].room.code, anchorCode)
-            );
+            const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorCode);
             for (const roomId of roomIds) {
               const nurseHit = findEvictableNurse(roomId, entry.session);
               if (!nurseHit) continue;
