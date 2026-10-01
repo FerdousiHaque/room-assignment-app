@@ -184,9 +184,10 @@
  *    shouldn't weigh into that comparison. Separately, a provider who has
  *    an office on the floor AND has NO in-person visit at all today (every
  *    visit is telephone or video) doesn't need an assigned exam room at
- *    all — they can see those patients from their own office — UNLESS
- *    their type is Doctor or Fellow, who always still get a room regardless
- *    of visit mix. Such a provider is filtered out before Phase 0 even
+ *    all — they can see those patients from their own office — but ONLY
+ *    when their type is Doctor or Fellow; a Nurse or Any-type provider in
+ *    the identical situation still gets a room regardless of visit mix.
+ *    Such a provider is filtered out before Phase 0 even
  *    starts: no placement attempt, no "Not Found" warning, no entry in the
  *    results at all, since nothing was needed. This is the final check
  *    before the results are considered ready to export.
@@ -360,17 +361,18 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       }
       return true;
     })
-    // A provider with an office on the floor whose day is ENTIRELY
+    // A Doctor or Fellow with an office on the floor whose day is ENTIRELY
     // telephone/video visits (no in-person visit at all) can see those
-    // patients from their own office and doesn't need an exam room today —
-    // except a Doctor or Fellow, who always still gets a room regardless of
-    // visit mix. Excluded here means excluded entirely: no placement
-    // attempt, no "Not Found" warning, no entry in `assignments` — there's
-    // nothing to report because nothing was needed.
+    // patients from their own office and doesn't need an exam room today.
+    // Any other type (Nurse/Any) always still gets a room regardless of
+    // visit mix — this exemption is Doctor/Fellow-only. Excluded here means
+    // excluded entirely: no placement attempt, no "Not Found" warning, no
+    // entry in `assignments` — there's nothing to report because nothing
+    // was needed.
     .filter((e) => {
       const type = e.provider.type || 'Any';
       const noInPersonVisits = (e.inPersonPatientCount ?? e.patientCount ?? 0) === 0;
-      const needsNoRoomToday = e.provider.hasOfficeOnFloor && noInPersonVisits && type !== 'Doctor' && type !== 'Fellow';
+      const needsNoRoomToday = e.provider.hasOfficeOnFloor && noInPersonVisits && (type === 'Doctor' || type === 'Fellow');
       return !needsNoRoomToday;
     });
 

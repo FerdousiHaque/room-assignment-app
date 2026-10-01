@@ -37,9 +37,10 @@ Runs in this order for a given date:
    warning, doesn't occupy a room, doesn't count toward any desk's load)
    when **all** of: `hasOfficeOnFloor` is true, they have **zero in-person
    patients** that day (`inPersonPatientCount` — video and telephone visits
-   don't count as in-person), and their `type` is **not** `Doctor` or
-   `Fellow` (a Doctor/Fellow always still gets a room, even with an office
-   on the floor and an all-video/telephone day). `inPersonPatientCount` is
+   don't count as in-person), and their `type` **is** `Doctor` or `Fellow`
+   — this exemption is Doctor/Fellow-only; a `Nurse` or `Any`-type provider
+   in the identical situation (office on the floor, an all-video/telephone
+   day) still gets a room regardless of visit mix. `inPersonPatientCount` is
    computed by the PDF parser: it starts from `patientCount` and subtracts
    video visits; telephone-visit rows are dropped entirely upstream (never
    counted in `patientCount` either, never left in `unmatched`) — this
