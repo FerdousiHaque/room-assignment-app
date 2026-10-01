@@ -112,19 +112,23 @@ Runs in this order for a given date:
    next desk is tried. A provider's rooms are never split across two desks
    in this pass — but see the fallback-fill pass below, which can still
    fill an unsplit remainder.
-6. **Two-room adjacency (fallback only)** — when the system has to pick a
-   provider's second room itself, the two rooms must be "beside each
-   other": same letter suffix, room numbers exactly 2 apart (`22E`/`24E`,
-   `63E`/`65E`, `30`/`32`). This is only step 3 above (`secondPreferredRoomId`,
+6. **Two-room adjacency (fallback only, preferred — never a reason to leave
+   a provider without a room)** — when the system has to pick a provider's
+   second room itself (step 3 above; `secondPreferredRoomId`,
    `otherPreferredRoomCodes`, and `alternateRoomCodes` — steps 1, 2, 2b —
    are always used exactly as configured, no hard adjacency requirement,
    though step 2/2b do prefer an adjacent candidate when choosing among
-   several open ones); it falls back to any open room adjacent to whatever
-   the first room actually received. The Providers form does **not** filter
-   the Second Preferred Room dropdown by adjacency — it only excludes
-   whichever room is already picked as Primary — since an explicitly
-   configured Second Preferred Room is always honored as typed, adjacent or
-   not.
+   several open ones), it first tries any open room "beside" the first
+   room: same letter suffix, room numbers exactly 2 apart (`22E`/`24E`,
+   `63E`/`65E`, `30`/`32`). If **no** adjacent room is open, it falls back
+   to **any** open room at that desk, adjacent or not — adjacency is a
+   nice-to-have for a tidier pair, never a reason to leave this provider
+   without a second room while some other, non-adjacent room sits empty
+   (that would break the never-drop-a-provider guarantee in step 7 below
+   for no real benefit). The Providers form does **not** filter the Second
+   Preferred Room dropdown by adjacency — it only excludes whichever room
+   is already picked as Primary — since an explicitly configured Second
+   Preferred Room is always honored as typed, adjacent or not.
 7. **Fallback fill** (last resort, once after every tier) — no working,
    non-fixed provider is left missing a room while a genuinely open one
    exists anywhere. Searches every desk (home, then `alternateDeskIds` by

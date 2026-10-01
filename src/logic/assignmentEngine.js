@@ -613,13 +613,25 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
     stillMissing = missingSlotIndexes.filter((i) => filled[i] === undefined);
 
-    // Step 3: existing fallback logic, unchanged — generic preference
-    // scoring for slot 0, the anchor-adjacency rule (#17) for slot 1.
+    // Step 3: existing fallback logic — generic preference scoring for
+    // slot 0, the anchor-adjacency rule (#17) for slot 1, PLUS a final
+    // non-adjacent fallback for slot 1 (see below): adjacency is a
+    // nice-to-have for a tidier pair, never a reason to leave this
+    // provider without a second room while some other, non-adjacent room
+    // at this desk is genuinely open — that would violate the
+    // never-drop-a-provider guarantee (rule #18) for no real benefit.
     for (const slotIndex of stillMissing) {
       let roomId;
       if (slotIndex === 1 && (entry.provider.preferredNumberOfRooms || 1) === 2) {
         const anchorCode = filled[0] !== undefined ? roomState[filled[0]]?.room.code || null : anchorCodeForSlot1;
         roomId = anchorCode ? pickRoom(deskId, entry, null, pickedSoFar, anchorCode) : null;
+        // No adjacent room open (or no anchor at all, e.g. slot 0 itself
+        // is still missing too) — rather than leave this slot "Not Found"
+        // while a different, non-adjacent room at this desk sits empty,
+        // fall back to any open room here, same as slot 0's rule.
+        if (!roomId) {
+          roomId = pickRoom(deskId, entry, null, pickedSoFar);
+        }
       } else {
         roomId = pickRoom(deskId, entry, null, pickedSoFar);
       }
