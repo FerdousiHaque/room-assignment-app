@@ -88,8 +88,14 @@ Runs in this order for a given date:
    3. Whatever's still missing falls back to preference-scored room
       selection (`scoreRoom`), highest wins: primary/second exact match
       (+10, redundant with step 1 above but kept as a score) → needs
-      video-capable & room has it (+5) → `alternateRoomCodes` match (+5) →
-      window preference match (+2) → room already half-filled by a
+      video-capable & room has it (+5) → `alternateRoomCodes` match (+5,
+      **desk-scoped**: only awarded when the candidate room's own desk is
+      actually one of this provider's checked alternate desks — room
+      numbering commonly repeats across desks/wings, so without this check
+      a code typed for one alternate desk could wrongly boost a
+      same-numbered room at an entirely different desk, including the home
+      desk or one never checked as an alternate at all) → window
+      preference match (+2) → room already half-filled by a
       complementary AM/PM provider (+1, or **+4** when this provider has
       only 1–2 patients that day — a light/likely-half-day case, so it's
       steered toward an already-shared room, leaving whole empty rooms for

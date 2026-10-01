@@ -390,14 +390,20 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   // is the primary preferred room for slot 0, the second preferred room for
   // slot 1 — passed in by the caller per-slot. alternateRoomCodes matches by
   // room code (not id) so it lines up with whatever the user typed on the
-  // Providers page, and applies at any desk — naturally scoped to overflow
-  // desks in practice, since a home-desk room wouldn't usually also be
-  // listed there. The otherPreferredRoomCodes bonus below is now mostly a
-  // residual tie-break: rule #15's explicit, ordered try (fillMissingSlots)
-  // already claims a matching room whenever one was actually open, so by
-  // the time generic scoring runs here that list has usually already been
-  // exhausted — this only still matters for an odd-one-out code left over
-  // from an unpaired 2-room list, or a slot filled through a different path.
+  // Providers page, but — unlike otherPreferredRoomCodes just below — it is
+  // explicitly scoped to the room's own desk actually being one of this
+  // provider's checked alternate desks (same rule altDeskRoomIdsInOrder
+  // uses). Room numbering commonly repeats across desks/wings (a "10" at
+  // Desk B and an unrelated "10" at Desk C, or even at the home desk), so
+  // without this check a code typed for one alternate desk could boost a
+  // same-numbered room at a totally different desk — including one never
+  // even checked as an alternate. The otherPreferredRoomCodes bonus below
+  // is now mostly a residual tie-break: rule #15's explicit, ordered try
+  // (fillMissingSlots) already claims a matching room whenever one was
+  // actually open, so by the time generic scoring runs here that list has
+  // usually already been exhausted — this only still matters for an
+  // odd-one-out code left over from an unpaired 2-room list, or a slot
+  // filled through a different path.
   const scoreRoom = (roomId, entry, preferredRoomId, alreadyPicked) => {
     if (alreadyPicked.includes(roomId)) return -Infinity; // never double-book the same room to the same provider
     const s = roomState[roomId];
@@ -405,7 +411,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     if (preferredRoomId && preferredRoomId === roomId) score += 10;
     if ((entry.provider.otherPreferredRoomCodes || []).includes(s.room.code)) score += 7;
     if (entry.needsVideoCapable && s.room.videoCapable) score += 5;
-    if ((entry.provider.alternateRoomCodes || []).includes(s.room.code)) score += 5;
+    if (
+      (entry.provider.alternateDeskIds || []).includes(s.room.deskId) &&
+      (entry.provider.alternateRoomCodes || []).includes(s.room.code)
+    ) {
+      score += 5;
+    }
     if (entry.provider.windowPreference === 'prefers' && s.room.hasWindow) score += 2;
     // Reuse a half-filled room (AM/PM room-sharing) rather than opening a
     // fresh one. A provider with only 1-2 patients that day is a light,
