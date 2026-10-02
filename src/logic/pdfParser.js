@@ -341,7 +341,7 @@ export function deriveDayEntries(rows, providers) {
     providers.map((p) => [normalizeName(`${p.lastName}, ${p.firstName}`), p])
   );
 
-  const grouped = new Map(); // providerId -> { patientCount, inPersonPatientCount, times: [], hasVideoVisit, seenMrns: Set }
+  const grouped = new Map(); // providerId -> { patientCount, inPersonPatientCount, inPersonAmCount, inPersonPmCount, times: [], hasVideoVisit, seenMrns: Set }
   const unmatched = [];
 
   for (const row of rows) {
@@ -353,7 +353,23 @@ export function deriveDayEntries(rows, providers) {
       continue;
     }
     if (!grouped.has(provider.id)) {
-      grouped.set(provider.id, { patientCount: 0, inPersonPatientCount: 0, times: [], hasVideoVisit: false, seenMrns: new Set() });
+      grouped.set(provider.id, {
+        patientCount: 0,
+        inPersonPatientCount: 0,
+        // Per-half-day in-person counts — used by assignmentEngine.js's
+        // 2-rooms-down-to-1 reduction (a provider with at most 1 in-person
+        // visit in EACH half separately doesn't need a second room that
+        // day, even if they're also seeing a video/telephone patient in
+        // the other half, or have a second in-person visit on the OTHER
+        // side of noon). A row with no readable time can't be bucketed, so
+        // it's simply not counted in either half (counted only in the
+        // overall inPersonPatientCount above).
+        inPersonAmCount: 0,
+        inPersonPmCount: 0,
+        times: [],
+        hasVideoVisit: false,
+        seenMrns: new Set()
+      });
     }
     const g = grouped.get(provider.id);
     const mrn = rowMrn(row);
@@ -363,7 +379,14 @@ export function deriveDayEntries(rows, providers) {
     }
     const isVideo = looksLikeVideoVisit(row);
     g.patientCount += 1;
-    if (!isVideo) g.inPersonPatientCount += 1;
+    if (!isVideo) {
+      g.inPersonPatientCount += 1;
+      const minutes = row.time ? parseClockTime(row.time) : null;
+      if (minutes !== null) {
+        if (minutes < NOON) g.inPersonAmCount += 1;
+        else g.inPersonPmCount += 1;
+      }
+    }
     if (row.time) g.times.push(row.time);
     if (isVideo) g.hasVideoVisit = true;
   }
@@ -373,6 +396,8 @@ export function deriveDayEntries(rows, providers) {
     isWorking: true,
     patientCount: g.patientCount,
     inPersonPatientCount: g.inPersonPatientCount,
+    inPersonAmCount: g.inPersonAmCount,
+    inPersonPmCount: g.inPersonPmCount,
     soloTime: g.patientCount === 1 ? g.times[0] || null : null,
     session: deriveSession(g.times),
     hasVideoVisit: g.hasVideoVisit

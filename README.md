@@ -163,6 +163,30 @@ Runs in this order for a given date:
     is true and the provider has no `hasOfficeOnFloor`, at least one
     assigned room should be video-capable; still unmet after step 9's
     backtracking → warning.
+11. **Effective rooms needed (2-rooms-down-to-1 reduction)** — a provider's
+    `preferredNumberOfRooms` is their standing configuration, not
+    necessarily how many rooms they actually need on a given day. Before
+    placement, every entry gets a computed `effectiveRoomsNeeded`
+    (`computeEffectiveRoomsNeeded`) that every placement/overflow/fallback/
+    eviction step reads instead of `preferredNumberOfRooms` directly:
+    - **Nurse** type: always exactly 1 room, full stop, regardless of
+      `preferredNumberOfRooms` or how busy the day is — the field is
+      ignored entirely for this type.
+    - Configured for 2 rooms, any other type: still 2, **unless** the
+      entry has at most 1 in-person visit in *each* half-day separately
+      (`inPersonAmCount <= 1` and `inPersonPmCount <= 1`, tracked by
+      `pdfParser.js`'s `deriveDayEntries`) — one in-person visit per half
+      never needs two simultaneous rooms, whether it's paired with a
+      video/telephone visit in that same half or with a second in-person
+      visit on the other side of noon (1 AM + 1 PM still reduces to 1
+      room). If either per-half-day count is missing (an entry predating
+      this field), the configured value is used as-is.
+    - Configured for 1 room: always 1, nothing to reduce.
+
+    This applies identically to fixed-room providers (step 2) — a
+    fixed-room provider whose day reduces to 1 room only has their primary
+    room reserved; the second preferred room is simply never reserved in
+    the first place, so it's automatically available to anyone else.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's

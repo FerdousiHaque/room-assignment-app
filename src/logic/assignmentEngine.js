@@ -191,6 +191,30 @@
  *    starts: no placement attempt, no "Not Found" warning, no entry in the
  *    results at all, since nothing was needed. This is the final check
  *    before the results are considered ready to export.
+ * 22. NEW — effective rooms needed (2-rooms-down-to-1 reduction): a
+ *    provider's preferredNumberOfRooms is their STANDING configuration, not
+ *    necessarily how many rooms they actually need on a given day — see
+ *    computeEffectiveRoomsNeeded, run once per entry up front and stored as
+ *    entry.effectiveRoomsNeeded (every placement/overflow/fallback/eviction
+ *    path below reads THIS, never preferredNumberOfRooms directly):
+ *      - `Nurse` type: always exactly 1 room, full stop, regardless of
+ *        preferredNumberOfRooms or visit volume — the field is simply
+ *        ignored for this type.
+ *      - Configured for 2 rooms, any other type: still 2, UNLESS the entry
+ *        has at most 1 in-person visit in EACH half-day separately
+ *        (inPersonAmCount <= 1 AND inPersonPmCount <= 1 — see pdfParser.js)
+ *        — a single in-person visit per half never needs two simultaneous
+ *        rooms, whether paired with a video/telephone visit in that same
+ *        half, or with a second in-person visit on the OTHER side of noon
+ *        (1 AM-in-person + 1 PM-in-person still reduces to 1 room). If
+ *        either per-half-day count is missing (an entry that predates this
+ *        field), the configured value is used as-is rather than guessing.
+ *      - Configured for 1 room: always 1, nothing to reduce.
+ *    This applies identically to fixed-room providers (#13) — a fixed-room
+ *    provider whose day reduces to 1 room only has their primary room
+ *    reserved; the second preferred room is simply never reserved in the
+ *    first place, so it's automatically available to anyone else — there's
+ *    nothing further to "release".
  * ------------------------------------------------------------------
  */
 
@@ -216,6 +240,41 @@ function roomsAdjacent(codeA, codeB) {
   const b = parseRoomCode(codeB);
   if (!a || !b) return false;
   return a.suffix === b.suffix && Math.abs(a.num - b.num) === 2;
+}
+
+/**
+ * How many rooms this entry actually needs TODAY — not necessarily the
+ * same as provider.preferredNumberOfRooms (rule #22, see the top-of-file
+ * docstring). Computed once per entry and stored as entry.effectiveRoomsNeeded
+ * so every placement/overflow/fallback/eviction path downstream reads that
+ * instead of re-deriving it (and instead of reading
+ * provider.preferredNumberOfRooms directly, which would miss the
+ * reduction):
+ *   - `Nurse` type: always exactly 1, full stop — preferredNumberOfRooms
+ *     is ignored entirely for this type, even if someone sets it to 2.
+ *   - Configured for 1 room: always 1 (nothing to reduce).
+ *   - Configured for 2 rooms, any other type: still 2, UNLESS the entry
+ *     has at most 1 in-person visit in EACH half-day separately
+ *     (inPersonAmCount <= 1 AND inPersonPmCount <= 1) — one in-person
+ *     visit per half never needs two simultaneous rooms, whether it's
+ *     paired with a video/telephone visit in that same half, or with a
+ *     second in-person visit on the OTHER side of noon (1 AM + 1 PM still
+ *     reduces to 1 room). If either per-half-day count is missing
+ *     (dayEntries that predate this field), the configured value is used
+ *     as-is rather than guessing.
+ * The room this frees up is simply never reserved/occupied in the first
+ * place — there's nothing further to "release", it's automatically
+ * available to any other provider.
+ */
+function computeEffectiveRoomsNeeded(provider, entry) {
+  const configured = (provider && provider.preferredNumberOfRooms) || 1;
+  const type = (provider && provider.type) || 'Any';
+  if (type === 'Nurse') return 1;
+  if (configured !== 2) return configured;
+  const amCount = entry.inPersonAmCount;
+  const pmCount = entry.inPersonPmCount;
+  if (amCount === undefined || pmCount === undefined) return configured;
+  return amCount <= 1 && pmCount <= 1 ? 1 : 2;
 }
 
 /**
@@ -258,13 +317,18 @@ export function computeBlockedSlots(roomBlocks, date) {
  *                                hasOfficeOnFloor, suppressWarnings,
  *                                fixedRoom, type }]
  * @param {Array} dayEntries  [{ providerId, isWorking, patientCount, inPersonPatientCount?,
- *                                soloTime?, session, hasVideoVisit? }]
+ *                                inPersonAmCount?, inPersonPmCount?, soloTime?, session,
+ *                                hasVideoVisit? }]
  *                             hasVideoVisit is the ONLY source of whether a video-capable
  *                             room is needed — it comes from that day's import, never from
  *                             a static provider field. inPersonPatientCount excludes video
  *                             visits (telephone visits are dropped entirely upstream, in
  *                             pdfParser.js, and never reach here at all) — used for desk-load
  *                             ordering (rule #21) and falls back to patientCount if omitted.
+ *                             inPersonAmCount/inPersonPmCount split that same in-person count
+ *                             by half-day — used by the 2-rooms-down-to-1 reduction (rule #22);
+ *                             omitting either disables that reduction for the entry (falls
+ *                             back to provider.preferredNumberOfRooms as-is).
  *                             soloTime is the one raw imported Time value for a provider with
  *                             exactly one patient that day, or null/omitted otherwise.
  * @param {Array} roomBlocks  [{ id, roomId, date, startMinutes, endMinutes, reason }]
@@ -352,7 +416,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       // (e.hasVideoVisit) plus the provider's fixed office-on-floor fact —
       // there is no provider-level "has video visit" fallback.
       const needsVideoCapable = Boolean(provider && e.hasVideoVisit && !provider.hasOfficeOnFloor);
-      return { ...e, provider, needsVideoCapable };
+      const effectiveRoomsNeeded = computeEffectiveRoomsNeeded(provider, e);
+      return { ...e, provider, needsVideoCapable, effectiveRoomsNeeded };
     })
     .filter((e) => {
       if (!e.provider) {
@@ -536,7 +601,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     }
 
     const slotIndex = stillMissing[0];
-    const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+    const need2 = entry.effectiveRoomsNeeded === 2;
     let candidateIds = ids;
     if (need2 && slotIndex === 1) {
       const anchorCode = filled[0] !== undefined ? roomState[filled[0]]?.room.code || null : anchorCodeForSlot1;
@@ -633,7 +698,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     // never-drop-a-provider guarantee (rule #18) for no real benefit.
     for (const slotIndex of stillMissing) {
       let roomId;
-      if (slotIndex === 1 && (entry.provider.preferredNumberOfRooms || 1) === 2) {
+      if (slotIndex === 1 && entry.effectiveRoomsNeeded === 2) {
         const anchorCode = filled[0] !== undefined ? roomState[filled[0]]?.room.code || null : anchorCodeForSlot1;
         roomId = anchorCode ? pickRoom(deskId, entry, null, pickedSoFar, anchorCode) : null;
         // No adjacent room open (or no anchor at all, e.g. slot 0 itself
@@ -698,7 +763,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
 
   if (fixedEntries.length > 0) logs.push('Reserving fixed rooms…');
   for (const entry of fixedEntries) {
-    const need = entry.provider.preferredNumberOfRooms || 1;
+    const need = entry.effectiveRoomsNeeded;
     const homeDesk = deskById[entry.provider.homeDeskId];
     logDeskStart(homeDesk);
     const slots = [];
@@ -832,7 +897,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       if (tierEntriesByDesk[desk.id].length === 0) continue;
       logDeskStart(desk);
       for (const entry of tierEntriesByDesk[desk.id]) {
-        const need = entry.provider.preferredNumberOfRooms || 1;
+        const need = entry.effectiveRoomsNeeded;
         const slots = placeSlots(desk.id, entry, need, 0, false);
         const assignment = makeAssignment(entry, desk, slots);
         assignments.push(assignment);
@@ -887,7 +952,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   // at all), then — only when none exist — rooms adjacent to `anchorCode`.
   const slotEligibleRoomIds = (deskId, entry, slotIndex, anchorCode) => {
     const allIds = roomsByDesk[deskId] || [];
-    const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+    const need2 = entry.effectiveRoomsNeeded === 2;
     if (!need2 || slotIndex !== 1) return allIds;
 
     const named = [];
@@ -927,7 +992,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   const relocateEvictedNurse = (hit) => {
     const nurseEntry = hit.entry;
     const nurseAssignment = hit.assignment;
-    const need2 = (nurseEntry.provider.preferredNumberOfRooms || 1) === 2;
+    const need2 = nurseEntry.effectiveRoomsNeeded === 2;
     let anchorCode = null;
     if (need2 && hit.slotIndex === 1) {
       const slot0RoomId = nurseAssignment.roomSlots[0]?.roomId;
@@ -967,7 +1032,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       if (!assignment) continue;
       const isPseudo = entry.providerId.startsWith('unmatched-');
       const allowEvict = !isPseudo && (entry.provider.type || 'Any') !== 'Nurse';
-      const need2 = (entry.provider.preferredNumberOfRooms || 1) === 2;
+      const need2 = entry.effectiveRoomsNeeded === 2;
 
       // First pass: any already-open room, no eviction. Tries each desk in
       // order, filling as many of the entry's still-missing slots as
