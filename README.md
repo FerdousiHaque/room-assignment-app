@@ -187,6 +187,33 @@ Runs in this order for a given date:
     fixed-room provider whose day reduces to 1 room only has their primary
     room reserved; the second preferred room is simply never reserved in
     the first place, so it's automatically available to anyone else.
+12. **Room contention tie-break** — placement within one priority tier (#3)
+    at one desk is first-come, first-served: whoever is processed first
+    simply claims a contested room first. Entries are sorted before
+    placement so ties resolve sensibly instead of by arbitrary input order:
+    whoever needs a video-capable room and has no office on the floor goes
+    first; among the rest, whoever has more in-person patients today goes
+    first. This only decides who gets first crack at a desk — it doesn't
+    change what either provider is eligible for. The provider who loses a
+    contested room still gets their normal fallback attempt (next
+    preference, Other Set of Rooms, Alt desk rooms, adjacency, generic
+    scoring) or, failing that, overflow (#5) to whichever alternate desk
+    has the lowest in-person patient load.
+13. **Reshuffle any provider to complete a two-room adjacent pair** — the
+    fallback pass's eviction logic previously only ever bumped an
+    already-placed Nurse out of a room (see step 6's cross-check). Now,
+    specifically when a provider still needs the SECOND room of an
+    adjacent pair (step 6) and neither an open room nor an evictable Nurse
+    could be found anywhere, the system also tries evicting any OTHER
+    already-placed, non-fixed-room occupant of the SAME OR LOWER priority
+    type (#3) than the provider who needs the room — never a strictly
+    higher one (a Nurse or Any-type still can't bump a Doctor/Fellow this
+    way). This is only ever kept if the evicted occupant can genuinely be
+    relocated to another open room (anywhere they're eligible to work, not
+    just the same desk) in that same attempt; if they can't, the whole
+    thing is rolled back and the slot is left exactly as it was — so
+    nobody ends up without a room as a net result of this reshuffle.
+    Pseudo (unmatched-name) entries are never evicted this way.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's

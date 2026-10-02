@@ -215,6 +215,38 @@
  *    reserved; the second preferred room is simply never reserved in the
  *    first place, so it's automatically available to anyone else — there's
  *    nothing further to "release".
+ * 23. NEW — room contention tie-break: within one priority tier (#14) at one
+ *    desk, placement normally happens in whatever order the entries were
+ *    given, and whoever is processed first simply claims a contested room
+ *    first (occupy() makes it unavailable to the next entry). Now, before
+ *    placing a tier's entries at a desk, they're sorted so that whoever
+ *    needs a video-capable room and has no office on the floor
+ *    (entry.needsVideoCapable, #9) goes first; among the rest, whoever has
+ *    more in-person patients today (inPersonPatientCount) goes first. This
+ *    doesn't change WHAT each entry is eligible for (preferences, Other Set
+ *    of Rooms, Alt desk rooms, adjacency, generic scoring — all unchanged),
+ *    only WHO gets first crack when two entries would otherwise collide on
+ *    the identical room: the loser simply falls through to their next-best
+ *    option at this desk, or to overflow (#16) at whichever alternate desk
+ *    has the lowest in-person patient load if nothing else fits here.
+ * 24. NEW — "reshuffle any provider" to complete a two-room adjacent pair:
+ *    the fallback pass's eviction logic (#18) previously only ever bumped
+ *    an already-placed Nurse out of a room. Now, specifically when a
+ *    provider still needs their SECOND room of an adjacent pair (slot 1,
+ *    #17, slot 0 already filled) and no open room and no evictable Nurse
+ *    could be found anywhere, the system also tries evicting any OTHER
+ *    already-placed, non-fixed-room occupant — of the same or lower
+ *    priority type (#14) than the provider who needs the room, never a
+ *    strictly higher one — from an eligible room (findEvictableOccupant).
+ *    This is only ever COMMITTED if the evicted occupant can genuinely be
+ *    relocated to another open room in the very same attempt
+ *    (relocateEvictedOccupant); if they can't, the whole thing is rolled
+ *    back and the slot is left exactly as it was — unlike the Nurse-only
+ *    eviction (#18), which may leave an unrelocatable Nurse "Not Found",
+ *    this path guarantees nobody ends up without a room as a net result.
+ *    Pseudo ("unmatched name") entries are never evicted by this path
+ *    (they're already exempt from the never-drop guarantee — #10 — so
+ *    bumping one isn't the point of this feature).
  * ------------------------------------------------------------------
  */
 
@@ -896,7 +928,23 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     for (const desk of desks) {
       if (tierEntriesByDesk[desk.id].length === 0) continue;
       logDeskStart(desk);
-      for (const entry of tierEntriesByDesk[desk.id]) {
+      // Rule #23 — room contention tie-break: placement is first-come
+      // first-served (occupy() makes a room unavailable to whoever's
+      // processed next), so ordering entries here decides who wins when
+      // two of them would otherwise collide on the identical room. Whoever
+      // needs a video-capable room and has no office on the floor goes
+      // first; among the rest, whoever has more in-person patients today
+      // goes first. Doesn't change what either entry is eligible for —
+      // only who gets first crack at this desk.
+      const orderedDeskEntries = [...tierEntriesByDesk[desk.id]].sort((a, b) => {
+        const videoA = a.needsVideoCapable ? 1 : 0;
+        const videoB = b.needsVideoCapable ? 1 : 0;
+        if (videoA !== videoB) return videoB - videoA;
+        const countA = a.inPersonPatientCount ?? a.patientCount ?? 0;
+        const countB = b.inPersonPatientCount ?? b.patientCount ?? 0;
+        return countB - countA;
+      });
+      for (const entry of orderedDeskEntries) {
         const need = entry.effectiveRoomsNeeded;
         const slots = placeSlots(desk.id, entry, need, 0, false);
         const assignment = makeAssignment(entry, desk, slots);
@@ -1009,6 +1057,58 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     }
   };
 
+  // Rule #24 — "reshuffle any provider": generalized version of
+  // findEvictableNurse, used only to help a provider complete a two-room
+  // adjacent pair (#17) when neither an open room nor an evictable Nurse
+  // could be found. Returns an evictable occupant of `roomId` during
+  // `neededSession` — never the requesting provider itself, never a
+  // fixed-room reservation with patients that day, never a pseudo
+  // ("unmatched name") entry (already exempt from the never-drop guarantee,
+  // #10 — bumping one isn't the point of this feature), and never a
+  // STRICTLY HIGHER-priority type (#14) than `requestingEntry` — a Nurse or
+  // Any-type still can't bump a Doctor/Fellow this way, but same-or-lower
+  // priority (including same-tier) occupants are eligible.
+  const findEvictableOccupant = (roomId, neededSession, requestingEntry) => {
+    const s = roomState[roomId];
+    const occupantId =
+      neededSession === 'FULL' ? s.amOccupant || s.pmOccupant : neededSession === 'AM' ? s.amOccupant : s.pmOccupant;
+    if (!occupantId || occupantId === requestingEntry.providerId) return null;
+    if (occupantId.startsWith('unmatched-')) return null;
+    const occAssignment = assignments.find((a) => a.providerId === occupantId);
+    if (!occAssignment) return null;
+    const occEntry = workingEntries.find((e) => e.providerId === occupantId);
+    if (!occEntry) return null;
+    if (occEntry.provider.fixedRoom && occEntry.patientCount > 0) return null;
+    if (typeRank(occEntry.provider.type) < typeRank(requestingEntry.provider.type)) return null;
+    const slotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+    if (slotIndex === -1) return null;
+    return { providerId: occupantId, assignment: occAssignment, entry: occEntry, slotIndex };
+  };
+
+  // Rule #24 cont'd — unlike relocateEvictedNurse (which may leave a Nurse
+  // "Not Found" if nothing opens up elsewhere — an already-accepted
+  // outcome for that narrower feature), this MUST succeed for the eviction
+  // to be kept: it returns the new slot object on success, or null on
+  // failure, so the caller can roll the whole eviction back and guarantee
+  // nobody ends up without a room as a net result of this reshuffle.
+  const relocateEvictedOccupant = (hit) => {
+    const occEntry = hit.entry;
+    const need2 = occEntry.effectiveRoomsNeeded === 2;
+    let anchorCode = null;
+    if (need2 && hit.slotIndex === 1) {
+      const slot0RoomId = hit.assignment.roomSlots[0]?.roomId;
+      anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
+    }
+    for (const desk of deskSearchOrder(occEntry)) {
+      const result = fillMissingSlots(desk.id, occEntry, [hit.slotIndex], anchorCode);
+      const roomId = result[hit.slotIndex];
+      if (roomId) {
+        return { roomId, deskId: desk.id, isOverflow: desk.id !== occEntry.provider.homeDeskId };
+      }
+    }
+    return null;
+  };
+
   // Runs one full fallback sweep over whatever is missing a room RIGHT NOW
   // (recomputed fresh each call, not a fixed snapshot) and returns whether
   // it changed anything. Called in a loop below (rule #19 — cross-check /
@@ -1075,6 +1175,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
           anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
         }
 
+        let filledByEviction = false;
         outer: for (const desk of deskSearchOrder(entry)) {
           const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorCode);
           for (const roomId of roomIds) {
@@ -1094,7 +1195,56 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
             nurseHit.assignment.roomSlots[nurseHit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
             relocateEvictedNurse(nurseHit);
             changed = true;
+            filledByEviction = true;
             break outer;
+          }
+        }
+        if (filledByEviction) continue;
+
+        // Rule #24 — "reshuffle any provider": only for completing a
+        // two-room ADJACENT pair (need2, slot 1, slot 0 already filled) —
+        // a fully-missing provider is already covered above and by the
+        // broader fallback passes. No evictable Nurse was found anywhere
+        // for this slot, so now try evicting any OTHER already-placed,
+        // same-or-lower-priority, non-fixed-room occupant
+        // (findEvictableOccupant) — but ONLY keep it if the evicted
+        // occupant can genuinely be relocated to another open room in
+        // this same attempt (relocateEvictedOccupant); otherwise the whole
+        // thing is rolled back and this slot is left exactly as it was.
+        if (need2 && slotIndex === 1 && anchorCode) {
+          outer2: for (const desk of deskSearchOrder(entry)) {
+            const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorCode);
+            for (const roomId of roomIds) {
+              const occHit = findEvictableOccupant(roomId, entry.session, entry);
+              if (!occHit) continue;
+              const occOldSlot = { ...occHit.assignment.roomSlots[occHit.slotIndex] };
+              release(roomId, occHit.assignment.session);
+              if (!canFit(roomId, entry.session)) {
+                occupy(roomId, occHit.assignment.session, occHit.providerId);
+                continue;
+              }
+              occupy(roomId, entry.session, entry.providerId);
+              occHit.assignment.roomSlots[occHit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
+              const relocated = relocateEvictedOccupant(occHit);
+              if (!relocated) {
+                // Couldn't relocate the evicted provider anywhere — roll
+                // back everything so nobody ends up without a room.
+                release(roomId, entry.session);
+                occHit.assignment.roomSlots[occHit.slotIndex] = occOldSlot;
+                occupy(roomId, occHit.assignment.session, occHit.providerId);
+                continue;
+              }
+              assignment.roomSlots[slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+              logs.push(`Shifting ${entry.provider.name} to ${desk.name}`);
+              occHit.assignment.roomSlots[occHit.slotIndex] = relocated;
+              if (relocated.deskId !== occHit.entry.provider.homeDeskId) {
+                logs.push(
+                  `Shifting ${occHit.entry.provider.name} to ${deskById[relocated.deskId]?.name || 'another desk'} to complete ${entry.provider.name}'s room pair`
+                );
+              }
+              changed = true;
+              break outer2;
+            }
           }
         }
       }
