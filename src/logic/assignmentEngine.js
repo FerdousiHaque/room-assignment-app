@@ -250,28 +250,31 @@
  * 25. NEW — final two-room adjacency validation/repair (runs LAST, right
  *    before results are export-ready): every provider who needs 2 rooms
  *    (#22) and has both slots filled is double-checked for real adjacency
- *    (#17) — even a pair the provider explicitly named themselves
- *    (secondPreferredRoomId, or a pair from otherPreferredRoomCodes/
- *    alternateRoomCodes, both normally exempt from the adjacency check at
- *    placement time) is checked here and still eligible for repair;
- *    adjacency now wins even over an explicit non-adjacent pairing.
- *    Fixed-room providers (#13) are exempt — never touched. A non-adjacent
- *    pair is repaired (tryFixAdjacency) by trying, from either side of the
- *    pair, every room adjacent to the side being kept, across every desk
- *    this provider can reach: if that room is open, the provider simply
- *    moves there; if it's held by a "loosely placed" occupant — someone
- *    with no hard preference for their current room (no fixedRoom
- *    reservation, and the room isn't their own named preference — see
- *    hasHardPreferenceForRoom) and no strictly higher priority type (#14)
- *    than the provider being fixed — that occupant is evicted, but ONLY if
- *    they can genuinely be relocated to another open room in the same
- *    attempt (relocateEvictedOccupant, shared with #24); otherwise rolled
- *    back and the next candidate is tried. Re-run a few more times
- *    (bounded, same pattern as #19) since fixing one pair can change what's
- *    loosely available for the next. Whatever still can't be made adjacent
- *    after every attempt is left exactly as it was and flagged as a
- *    warning for manual review, rather than looping forever or dropping
- *    anyone's room.
+ *    (#17) — with exactly ONE exemption (isExplicitPrimarySecondPair): a
+ *    pair that is EXACTLY the provider's own configured Primary Preferred
+ *    Room + Second Preferred Room (in either slot order) is always honored
+ *    as-is, non-adjacent or not, no warning. A pair from
+ *    otherPreferredRoomCodes/alternateRoomCodes (a code picked from a
+ *    longer list, not a direct 1:1 configuration), or one the system
+ *    picked itself via fallback, is NOT exempt — still checked and
+ *    repaired here even though it was allowed to be non-adjacent at
+ *    placement time. Fixed-room providers (#13) are exempt — never
+ *    touched. A non-adjacent pair is repaired (tryFixAdjacency) by trying,
+ *    from either side of the pair, every room adjacent to the side being
+ *    kept, across every desk this provider can reach: if that room is
+ *    open, the provider simply moves there; if it's held by a "loosely
+ *    placed" occupant — someone with no hard preference for their current
+ *    room (no fixedRoom reservation, and the room isn't their own named
+ *    preference — see hasHardPreferenceForRoom) and no strictly higher
+ *    priority type (#14) than the provider being fixed — that occupant is
+ *    evicted, but ONLY if they can genuinely be relocated to another open
+ *    room in the same attempt (relocateEvictedOccupant, shared with #24);
+ *    otherwise rolled back and the next candidate is tried. Re-run a few
+ *    more times (bounded, same pattern as #19) since fixing one pair can
+ *    change what's loosely available for the next. Whatever still can't
+ *    be made adjacent after every attempt is left exactly as it was and
+ *    flagged as a warning for manual review, rather than looping forever
+ *    or dropping anyone's room.
  * ------------------------------------------------------------------
  */
 
@@ -1175,6 +1178,23 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return { providerId: occupantId, assignment: occAssignment, entry: occEntry, slotIndex };
   };
 
+  // Rule #25 — the ONE exemption from the adjacency check/repair: a pair
+  // that is EXACTLY the provider's own configured Primary Preferred Room +
+  // Second Preferred Room (in either slot order) is always honored as-is,
+  // even if non-adjacent — that's a direct, explicit 1:1 configuration, as
+  // opposed to a code picked from a longer list (Other Set of Rooms/Alt
+  // desk rooms) or a room the system picked itself, both of which ARE
+  // still subject to repair below.
+  const isExplicitPrimarySecondPair = (entry, assignment) => {
+    const p = entry.provider;
+    const id0 = assignment.roomSlots[0]?.roomId;
+    const id1 = assignment.roomSlots[1]?.roomId;
+    if (!id0 || !id1 || !p.primaryPreferredRoomId || !p.secondPreferredRoomId) return false;
+    if (p.primaryPreferredRoomId === p.secondPreferredRoomId) return false;
+    const assigned = new Set([id0, id1]);
+    return assigned.has(p.primaryPreferredRoomId) && assigned.has(p.secondPreferredRoomId);
+  };
+
   // Rule #25 cont'd — one attempt to fix a single non-adjacent two-room
   // pair. Tries, from EITHER side of the current pair (keep slot 0 fixed
   // and replace slot 1, then keep slot 1 fixed and replace slot 0), every
@@ -1184,11 +1204,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   // keeps the eviction if that occupant can genuinely be relocated
   // elsewhere in the same attempt (relocateEvictedOccupant), otherwise
   // rolls back and tries the next candidate. This applies even when the
-  // non-adjacent pair came from the provider's OWN explicit preference
-  // (secondPreferredRoomId or an Other Set of Rooms/Alt desk rooms pair) —
-  // confirmed to take priority over an explicit non-adjacent pairing.
-  // Returns whether anything changed.
+  // non-adjacent pair came from an Other Set of Rooms/Alt desk rooms pair
+  // or the system's own fallback pick — but NOT to an explicit Primary +
+  // Second Preferred Room pair (see isExplicitPrimarySecondPair), which is
+  // always left exactly as configured. Returns whether anything changed.
   const tryFixAdjacency = (assignment, entry) => {
+    if (isExplicitPrimarySecondPair(entry, assignment)) return false;
     const slot0 = assignment.roomSlots[0];
     const slot1 = assignment.roomSlots[1];
     if (!slot0?.roomId || !slot1?.roomId) return false; // only a fully-filled pair can be "non-adjacent"
@@ -1553,7 +1574,10 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       warnings.push(
         `${assignment.providerName}: ${missing} of ${assignment.roomSlots.length} preferred room(s) could not be assigned today (shown as "Not Found") — needs manual review.`
       );
-    } else if (entry.effectiveRoomsNeeded === 2) {
+    } else if (entry.effectiveRoomsNeeded === 2 && !isExplicitPrimarySecondPair(entry, assignment)) {
+      // An explicit Primary + Second Preferred Room pair is exempt from
+      // this check entirely (see isExplicitPrimarySecondPair) — honored
+      // as configured, non-adjacent or not, with no warning.
       const c0 = roomState[assignment.roomSlots[0].roomId]?.room.code;
       const c1 = roomState[assignment.roomSlots[1].roomId]?.room.code;
       if (!roomsAdjacent(c0, c1)) {

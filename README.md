@@ -217,25 +217,28 @@ Runs in this order for a given date:
 14. **Final two-room adjacency validation/repair** — runs LAST, right
     before results are considered export-ready. Every provider who needs 2
     rooms and has both slots filled is double-checked for real adjacency
-    (step 6) — even a pair the provider explicitly named themselves
-    (Second Preferred Room, or a pair from Other Set of Rooms/Alt desk
-    rooms — both normally exempt from the adjacency check at placement
-    time) is checked here, and adjacency now wins even over an explicit
-    non-adjacent pairing. Fixed-room providers are exempt — never touched.
-    A non-adjacent pair is repaired by trying, from either side of the
-    pair, every room adjacent to the side being kept, across every desk
-    that provider can reach: if that room is open, they simply move there;
-    if it's held by a **loosely placed** occupant — someone with no hard
-    preference for their current room (no fixed-room reservation, and the
-    room isn't their own named preference) and no strictly higher priority
-    type than the provider being fixed — that occupant is evicted, but
-    ONLY if they can genuinely be relocated to another open room in the
-    same attempt; otherwise the whole thing is rolled back and the next
-    candidate is tried. Repeated a few more times since fixing one pair can
-    free up what's available for the next. Whatever still can't be made
-    adjacent after every attempt is left exactly as it was and flagged
-    with a warning for manual review, rather than looping forever or
-    dropping anyone's room.
+    (step 6), with exactly ONE exemption: a pair that is EXACTLY the
+    provider's own configured Primary Preferred Room + Second Preferred
+    Room (in either slot order) is always honored as-is, non-adjacent or
+    not, with no warning — that's a direct, explicit 1:1 configuration. A
+    pair from Other Set of Rooms/Alt desk rooms (a code picked from a
+    longer list, not a direct 1:1 setting) or one the system picked itself
+    via fallback is NOT exempt — still checked and repaired here, even
+    though it was allowed to be non-adjacent at placement time. Fixed-room
+    providers are exempt — never touched. A non-adjacent pair is repaired
+    by trying, from either side of the pair, every room adjacent to the
+    side being kept, across every desk that provider can reach: if that
+    room is open, they simply move there; if it's held by a **loosely
+    placed** occupant — someone with no hard preference for their current
+    room (no fixed-room reservation, and the room isn't their own named
+    preference) and no strictly higher priority type than the provider
+    being fixed — that occupant is evicted, but ONLY if they can genuinely
+    be relocated to another open room in the same attempt; otherwise the
+    whole thing is rolled back and the next candidate is tried. Repeated a
+    few more times since fixing one pair can free up what's available for
+    the next. Whatever still can't be made adjacent after every attempt is
+    left exactly as it was and flagged with a warning for manual review,
+    rather than looping forever or dropping anyone's room.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's
