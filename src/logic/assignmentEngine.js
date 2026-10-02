@@ -247,6 +247,31 @@
  *    Pseudo ("unmatched name") entries are never evicted by this path
  *    (they're already exempt from the never-drop guarantee — #10 — so
  *    bumping one isn't the point of this feature).
+ * 25. NEW — final two-room adjacency validation/repair (runs LAST, right
+ *    before results are export-ready): every provider who needs 2 rooms
+ *    (#22) and has both slots filled is double-checked for real adjacency
+ *    (#17) — even a pair the provider explicitly named themselves
+ *    (secondPreferredRoomId, or a pair from otherPreferredRoomCodes/
+ *    alternateRoomCodes, both normally exempt from the adjacency check at
+ *    placement time) is checked here and still eligible for repair;
+ *    adjacency now wins even over an explicit non-adjacent pairing.
+ *    Fixed-room providers (#13) are exempt — never touched. A non-adjacent
+ *    pair is repaired (tryFixAdjacency) by trying, from either side of the
+ *    pair, every room adjacent to the side being kept, across every desk
+ *    this provider can reach: if that room is open, the provider simply
+ *    moves there; if it's held by a "loosely placed" occupant — someone
+ *    with no hard preference for their current room (no fixedRoom
+ *    reservation, and the room isn't their own named preference — see
+ *    hasHardPreferenceForRoom) and no strictly higher priority type (#14)
+ *    than the provider being fixed — that occupant is evicted, but ONLY if
+ *    they can genuinely be relocated to another open room in the same
+ *    attempt (relocateEvictedOccupant, shared with #24); otherwise rolled
+ *    back and the next candidate is tried. Re-run a few more times
+ *    (bounded, same pattern as #19) since fixing one pair can change what's
+ *    loosely available for the next. Whatever still can't be made adjacent
+ *    after every attempt is left exactly as it was and flagged as a
+ *    warning for manual review, rather than looping forever or dropping
+ *    anyone's room.
  * ------------------------------------------------------------------
  */
 
@@ -1109,6 +1134,123 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return null;
   };
 
+  // Rule #25 — final adjacency validation/repair. A "hard preference" for
+  // `roomId` means the occupant named it themselves (primaryPreferredRoomId,
+  // secondPreferredRoomId, or a code in otherPreferredRoomCodes/
+  // alternateRoomCodes resolving to this room's code), or it's a same-day
+  // fixed-room reservation (#13, never touched by anything). An occupant
+  // with none of those for their CURRENT room is "loosely placed" and is
+  // eligible to be moved by the adjacency repair below — one with a hard
+  // preference for their current room is left alone.
+  const hasHardPreferenceForRoom = (occEntry, roomId) => {
+    const p = occEntry.provider;
+    if (p.fixedRoom && occEntry.patientCount > 0) return true;
+    if (p.primaryPreferredRoomId === roomId || p.secondPreferredRoomId === roomId) return true;
+    const code = roomState[roomId]?.room.code;
+    if (!code) return false;
+    if ((p.otherPreferredRoomCodes || []).includes(code)) return true;
+    if ((p.alternateRoomCodes || []).includes(code)) return true;
+    return false;
+  };
+
+  // Returns an evictable, loosely-placed occupant of `roomId` during
+  // `neededSession` — never the requesting provider itself, never a pseudo
+  // entry, never someone with a hard preference for this specific room
+  // (see hasHardPreferenceForRoom), and never a strictly higher-priority
+  // type (#14) than `requestingEntry`.
+  const findLooselyPlacedOccupant = (roomId, neededSession, requestingEntry) => {
+    const s = roomState[roomId];
+    const occupantId =
+      neededSession === 'FULL' ? s.amOccupant || s.pmOccupant : neededSession === 'AM' ? s.amOccupant : s.pmOccupant;
+    if (!occupantId || occupantId === requestingEntry.providerId) return null;
+    if (occupantId.startsWith('unmatched-')) return null;
+    const occAssignment = assignments.find((a) => a.providerId === occupantId);
+    if (!occAssignment) return null;
+    const occEntry = workingEntries.find((e) => e.providerId === occupantId);
+    if (!occEntry) return null;
+    if (hasHardPreferenceForRoom(occEntry, roomId)) return null;
+    if (typeRank(occEntry.provider.type) < typeRank(requestingEntry.provider.type)) return null;
+    const slotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+    if (slotIndex === -1) return null;
+    return { providerId: occupantId, assignment: occAssignment, entry: occEntry, slotIndex };
+  };
+
+  // Rule #25 cont'd — one attempt to fix a single non-adjacent two-room
+  // pair. Tries, from EITHER side of the current pair (keep slot 0 fixed
+  // and replace slot 1, then keep slot 1 fixed and replace slot 0), every
+  // desk this provider can reach, every room there adjacent to the side
+  // being kept: if that adjacent room is already open, just moves there;
+  // if it's held by a loosely-placed occupant, evicts them — but only
+  // keeps the eviction if that occupant can genuinely be relocated
+  // elsewhere in the same attempt (relocateEvictedOccupant), otherwise
+  // rolls back and tries the next candidate. This applies even when the
+  // non-adjacent pair came from the provider's OWN explicit preference
+  // (secondPreferredRoomId or an Other Set of Rooms/Alt desk rooms pair) —
+  // confirmed to take priority over an explicit non-adjacent pairing.
+  // Returns whether anything changed.
+  const tryFixAdjacency = (assignment, entry) => {
+    const slot0 = assignment.roomSlots[0];
+    const slot1 = assignment.roomSlots[1];
+    if (!slot0?.roomId || !slot1?.roomId) return false; // only a fully-filled pair can be "non-adjacent"
+    const code0 = roomState[slot0.roomId]?.room.code;
+    const code1 = roomState[slot1.roomId]?.room.code;
+    if (roomsAdjacent(code0, code1)) return false; // already fine
+
+    for (const anchorSlotIndex of [0, 1]) {
+      const otherSlotIndex = anchorSlotIndex === 0 ? 1 : 0;
+      const anchorRoomId = assignment.roomSlots[anchorSlotIndex].roomId;
+      const anchorCode = roomState[anchorRoomId]?.room.code;
+      if (!anchorCode) continue;
+      const oldOtherRoomId = assignment.roomSlots[otherSlotIndex].roomId;
+
+      for (const desk of deskSearchOrder(entry)) {
+        for (const roomId of roomsByDesk[desk.id] || []) {
+          if (roomId === anchorRoomId || roomId === oldOtherRoomId) continue;
+          if (!roomsAdjacent(roomState[roomId].room.code, anchorCode)) continue;
+
+          if (canFit(roomId, entry.session)) {
+            release(oldOtherRoomId, entry.session);
+            occupy(roomId, entry.session, entry.providerId);
+            assignment.roomSlots[otherSlotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+            logs.push(`Adjusting ${entry.provider.name}'s room pair to keep it adjacent`);
+            return true;
+          }
+
+          const hit = findLooselyPlacedOccupant(roomId, entry.session, entry);
+          if (!hit) continue;
+          const occOldSlot = { ...hit.assignment.roomSlots[hit.slotIndex] };
+          release(roomId, hit.assignment.session);
+          if (!canFit(roomId, entry.session)) {
+            occupy(roomId, hit.assignment.session, hit.providerId);
+            continue;
+          }
+          release(oldOtherRoomId, entry.session);
+          occupy(roomId, entry.session, entry.providerId);
+          hit.assignment.roomSlots[hit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
+          const relocated = relocateEvictedOccupant(hit);
+          if (!relocated) {
+            // Couldn't relocate the evicted provider — roll everything
+            // back (assignment.roomSlots[otherSlotIndex] was never
+            // mutated above, so only the room-state occupy/release calls
+            // and the evicted provider's slot need undoing here).
+            release(roomId, entry.session);
+            occupy(oldOtherRoomId, entry.session, entry.providerId);
+            hit.assignment.roomSlots[hit.slotIndex] = occOldSlot;
+            occupy(roomId, hit.assignment.session, hit.providerId);
+            continue;
+          }
+          assignment.roomSlots[otherSlotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+          hit.assignment.roomSlots[hit.slotIndex] = relocated;
+          logs.push(
+            `Adjusting ${entry.provider.name}'s room pair to keep it adjacent (relocated ${hit.entry.provider.name})`
+          );
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   // Runs one full fallback sweep over whatever is missing a room RIGHT NOW
   // (recomputed fresh each call, not a fixed snapshot) and returns whether
   // it changed anything. Called in a loop below (rule #19 — cross-check /
@@ -1368,6 +1510,33 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     crossCheckPasses += 1;
   }
 
+  // ---- Phase 5 — final two-room adjacency validation/repair (rule #25) ---
+  // Runs last, right before results are considered export-ready: for every
+  // provider who needs 2 rooms and has both slots filled, double-checks the
+  // two rooms are actually adjacent (#17) — even a pair the provider named
+  // themselves (secondPreferredRoomId, or an Other Set of Rooms/Alt desk
+  // rooms pair) is checked and, if non-adjacent, still eligible for repair.
+  // Fixed-room providers (#13) are exempt — their rooms are never moved by
+  // anything. Re-run a few more times (bounded, same pattern as #19) since
+  // fixing one provider's pair can change what's loosely available for the
+  // next. Whatever can't be fixed (no loosely-placed occupant anywhere
+  // could be evicted-and-relocated to make it adjacent) is left exactly as
+  // it was and flagged in the final warnings sweep below.
+  logs.push('Verifying two-room adjacency…');
+  const fixedProviderIdsForAdjacency = new Set(fixedEntries.map((e) => e.providerId));
+  let adjacencyPasses = 0;
+  let adjacencyChanged = true;
+  while (adjacencyPasses < 4 && adjacencyChanged) {
+    adjacencyChanged = false;
+    for (const assignment of assignments) {
+      if (fixedProviderIdsForAdjacency.has(assignment.providerId)) continue;
+      const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+      if (!entry || entry.effectiveRoomsNeeded !== 2) continue;
+      if (tryFixAdjacency(assignment, entry)) adjacencyChanged = true;
+    }
+    adjacencyPasses += 1;
+  }
+
   logs.push('Finalizing all the providers…');
 
   // ---- Final sweep — warnings + video-capable validation ------------------
@@ -1384,6 +1553,14 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       warnings.push(
         `${assignment.providerName}: ${missing} of ${assignment.roomSlots.length} preferred room(s) could not be assigned today (shown as "Not Found") — needs manual review.`
       );
+    } else if (entry.effectiveRoomsNeeded === 2) {
+      const c0 = roomState[assignment.roomSlots[0].roomId]?.room.code;
+      const c1 = roomState[assignment.roomSlots[1].roomId]?.room.code;
+      if (!roomsAdjacent(c0, c1)) {
+        warnings.push(
+          `${assignment.providerName}: assigned two rooms (${c0}, ${c1}) that aren't adjacent — needs manual review.`
+        );
+      }
     }
   }
   checkVideoCapable(assignments);
