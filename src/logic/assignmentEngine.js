@@ -318,6 +318,9 @@
  *    with whoever holds an adjacent room (tryFixAdjacency, last step), as long
  *    as that occupant's own needs (adjacent pair, video room, West "6" rule)
  *    still hold in the room they receive.
+ * 33. NEW — set Alt desk rooms are claimed: a provider moved to another
+ *    desk takes the rooms set for them there (adjacent pair if 2), displacing
+ *    a loosely-placed occupant who is relocated (claimAltDeskRooms).
  * ------------------------------------------------------------------
  */
 
@@ -1473,6 +1476,82 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return false;
   };
 
+  // Rule #33 — an overflowed provider's "Alt desk rooms" (set in the
+  // database for the desk they were moved to) act like fixed-room choices:
+  // if they're not already in them, they take those rooms (an adjacent pair
+  // when they need two), displacing a loosely-placed occupant (no hard
+  // preference for that room, equal/lower priority) who is relocated into
+  // the rooms just freed or any other open room. All-or-nothing: if any
+  // displaced occupant can't be relocated, everything is rolled back.
+  const claimAltDeskRooms = () => {
+    let changed = false;
+    for (const assignment of assignments) {
+      const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+      if (!entry || entry.providerId.startsWith('unmatched-')) continue;
+      if (entry.provider.fixedRoom && entry.patientCount > 0) continue;
+      const placed = assignment.roomSlots.filter((sl) => sl.roomId && sl.deskId);
+      if (placed.length === 0 || placed.length !== assignment.roomSlots.length) continue;
+      const deskId = placed[0].deskId;
+      if (placed.some((sl) => sl.deskId !== deskId)) continue;
+      if (deskId === entry.provider.homeDeskId) continue;
+      const altIds = altDeskRoomIdsInOrder(deskId, entry).filter((id) => !roomForbiddenFor(entry, id));
+      if (altIds.length === 0) continue;
+      const need2 = entry.effectiveRoomsNeeded === 2 && assignment.roomSlots.length === 2;
+      const targets = [];
+      if (need2) {
+        for (let i = 0; i < altIds.length; i++)
+          for (let j = i + 1; j < altIds.length; j++)
+            if (roomsAdjacentById(altIds[i], altIds[j])) targets.push([altIds[i], altIds[j]]);
+      } else {
+        for (const id of altIds) targets.push([id]);
+      }
+      const cur = assignment.roomSlots.map((sl) => sl.roomId);
+      if (targets.some((t) => t.length === cur.length && t.every((id) => cur.includes(id)))) continue;
+
+      for (const t of targets) {
+        if (t.length !== cur.length) continue;
+        const evicted = [];
+        const taken = [];
+        let ok = true;
+        for (const id of cur) release(id, assignment.session);
+        for (const id of t) {
+          if (!canFit(id, entry.session)) {
+            const hit = findLooselyPlacedOccupant(id, entry.session, entry);
+            if (!hit) { ok = false; break; }
+            release(id, hit.assignment.session);
+            evicted.push({ hit, id, oldSlot: { ...hit.assignment.roomSlots[hit.slotIndex] } });
+            if (!canFit(id, entry.session)) { ok = false; break; }
+          }
+          occupy(id, entry.session, entry.providerId);
+          taken.push(id);
+        }
+        const rollback = () => {
+          for (const id of taken) release(id, entry.session);
+          for (const ev of evicted) {
+            ev.hit.assignment.roomSlots[ev.hit.slotIndex] = ev.oldSlot;
+            if (ev.relocatedRoomId) release(ev.relocatedRoomId, ev.hit.assignment.session);
+            occupy(ev.id, ev.hit.assignment.session, ev.hit.providerId);
+          }
+          for (const id of cur) occupy(id, assignment.session, entry.providerId);
+        };
+        if (!ok) { rollback(); continue; }
+        for (const ev of evicted) ev.hit.assignment.roomSlots[ev.hit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
+        for (const ev of evicted) {
+          const relocated = relocateEvictedOccupant(ev.hit);
+          if (!relocated) { ok = false; break; }
+          ev.hit.assignment.roomSlots[ev.hit.slotIndex] = relocated;
+          ev.relocatedRoomId = relocated.roomId;
+        }
+        if (!ok) { rollback(); continue; }
+        assignment.roomSlots = t.map((id) => ({ roomId: id, deskId, isOverflow: true }));
+        logs.push(`Giving ${entry.provider.name} their set Alt desk rooms at ${deskById[deskId]?.name || deskId}`);
+        changed = true;
+        break;
+      }
+    }
+    return changed;
+  };
+
   // Runs one full fallback sweep over whatever is missing a room RIGHT NOW
   // (recomputed fresh each call, not a fixed snapshot) and returns whether
   // it changed anything. Called in a loop below (rule #19 — cross-check /
@@ -1806,7 +1885,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   let somethingChanged = true;
   while (crossCheckPasses < 4 && somethingChanged) {
     const collapsed = collapseSplitProviders();
-    const fallbackChanged = runFallbackPass() || collapsed;
+    const claimed = claimAltDeskRooms();
+    const fallbackChanged = runFallbackPass() || collapsed || claimed;
     const videoChanged = tryImproveVideoCapableFit();
     somethingChanged = fallbackChanged || videoChanged;
     crossCheckPasses += 1;

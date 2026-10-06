@@ -152,6 +152,7 @@ FUNCTION generateDailyAssignments(desks, rooms, providers, dayEntries, roomBlock
 
     // Phase 4: cross-check
     REPEAT up to 4 times while something changes:
+        claimAltDeskRooms()           // overflowed provider takes set Alt desk rooms, displaced occupant relocated
         collapseSplitProviders()      // 2-room provider on two desks -> keep home desk's room, free the other
         runFallbackPass()
         tryImproveVideoCapableFit()   // swap into a video-capable room when needed and safe
@@ -205,6 +206,7 @@ FUNCTION scoreRoom(room, entry, preferredRoomId):
 | No room needed (Doctor/Fellow, all virtual) | filter in `generateDailyAssignments` |
 | Doctor → Fellow → Any → Nurse order | `tierOf`, `TYPE_PRIORITY` |
 | Contested room tie-break | `orderedDeskEntries` sort |
+| Overflowed provider takes their set Alt desk rooms | `claimAltDeskRooms` |
 | Never split across desks | `runOverflowAndValidate`, `deskSearchOrder` (desk lock), `collapseSplitProviders` |
 | Two-room adjacency and hallway | `roomsAdjacentById`, `sameHall`, `tryFixAdjacency` (open room → relocate occupant → direct swap) |
 | West "6" rule | `roomForbiddenFor` |

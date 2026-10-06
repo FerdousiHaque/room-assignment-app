@@ -255,6 +255,7 @@ Runs in this order for a given date:
 19. **Home desk first** — a desk's own Doctors/Fellows always get that desk's rooms before visitors from other desks: if a foreign provider holds a room while the home Doctor/Fellow has none, the visitor is moved elsewhere (Nurses are the ones relocated to other desks).
 20. **Never split across desks** — a provider who needs 2 rooms gets both on ONE desk. If only one room can be found, they keep it at their default desk (the other shows "Not Found") and any stray room on another desk is freed for a provider who has none.
 21. **Adjacent pair beats chosen rooms** — if a two-room provider's pair isn't adjacent and nothing is free, they swap rooms with whoever holds an adjacent room (as long as that person's own needs still hold in the room they receive).
+22. **Set Alt desk rooms are claimed** — a provider moved to another desk takes the rooms set for them there (an adjacent pair if they need two); a desk's own loosely-placed provider in those rooms is moved to other rooms (one or two over), keeping their own adjacency.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's
