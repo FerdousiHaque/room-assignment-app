@@ -308,6 +308,11 @@
  *    possible (else "Not Found"); Nurses are then the ones moved to other
  *    desks. A foreign provider never keeps a room at a desk while that
  *    desk's own Doctor/Fellow has none.
+ * 31. NEW — never split across desks: a provider needing 2 rooms gets both
+ *    on ONE desk. Once one room is placed only that desk is searched for the
+ *    other (deskSearchOrder), and collapseSplitProviders frees any stray
+ *    room on another desk (keeping the home desk's), which the next fallback
+ *    pass gives to a provider who has none.
  * ------------------------------------------------------------------
  */
 
@@ -1086,6 +1091,13 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   const patientLoadForFallback = (deskId) => patientLoad(deskId);
 
   const deskSearchOrder = (entry) => {
+    // Rule #31 — a provider needing 2 rooms is never split across desks: once
+    // one of their rooms is placed, only THAT desk is searched for the other.
+    if (entry.effectiveRoomsNeeded === 2) {
+      const a = assignments.find((x) => x.providerId === entry.providerId);
+      const placed = a && a.roomSlots.find((sl) => sl.roomId && sl.deskId);
+      if (placed && deskById[placed.deskId]) return [deskById[placed.deskId]];
+    }
     const seen = new Set();
     const ordered = [];
     const home = deskById[entry.provider.homeDeskId];
@@ -1433,6 +1445,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       // missing, an ordered single-room list when only one is) and the
       // anchor-adjacency fallback (#17) apply.
       for (const desk of deskSearchOrder(entry)) {
+        const placedDeskId = need2 ? assignment.roomSlots.find((sl) => sl.roomId)?.deskId : null;
+        if (placedDeskId && desk.id !== placedDeskId) continue; // rule #31
         logDeskStart(desk);
         const missingSlotIndexes = assignment.roomSlots
           .map((s, i) => (s.roomId === null ? i : -1))
@@ -1692,6 +1706,30 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return changed;
   };
 
+  // Rule #31 — safety net: a provider holding rooms on two different desks
+  // keeps only the rooms at their HOME desk (else at the desk of their first
+  // room); the stray room(s) are released so another provider who has none
+  // can use them (the next fallback pass hands them out).
+  const collapseSplitProviders = () => {
+    let changed = false;
+    for (const assignment of assignments) {
+      const placed = assignment.roomSlots.filter((sl) => sl.roomId && sl.deskId);
+      if (new Set(placed.map((sl) => sl.deskId)).size <= 1) continue;
+      const entry = workingEntries.find((e) => e.providerId === assignment.providerId);
+      if (!entry) continue;
+      if (entry.provider.fixedRoom && entry.patientCount > 0) continue;
+      const keepDeskId = placed.some((sl) => sl.deskId === entry.provider.homeDeskId) ? entry.provider.homeDeskId : placed[0].deskId;
+      assignment.roomSlots = assignment.roomSlots.map((sl) => {
+        if (!sl.roomId || sl.deskId === keepDeskId) return sl;
+        release(sl.roomId, assignment.session);
+        return { roomId: null, deskId: null, isOverflow: false };
+      });
+      logs.push(`Keeping ${entry.provider.name} on one desk (${deskById[keepDeskId]?.name || keepDeskId}); freed the room on another desk`);
+      changed = true;
+    }
+    return changed;
+  };
+
   runFallbackPass();
 
   // ---- Phase 4 — cross-check / backtracking (rule #19) --------------------
@@ -1707,7 +1745,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   let crossCheckPasses = 0;
   let somethingChanged = true;
   while (crossCheckPasses < 4 && somethingChanged) {
-    const fallbackChanged = runFallbackPass();
+    const collapsed = collapseSplitProviders();
+    const fallbackChanged = runFallbackPass() || collapsed;
     const videoChanged = tryImproveVideoCapableFit();
     somethingChanged = fallbackChanged || videoChanged;
     crossCheckPasses += 1;
@@ -1738,6 +1777,11 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       if (tryFixAdjacency(assignment, entry)) adjacencyChanged = true;
     }
     adjacencyPasses += 1;
+  }
+
+  if (collapseSplitProviders()) {
+    runFallbackPass();
+    collapseSplitProviders();
   }
 
   logs.push('Finalizing all the providers…');

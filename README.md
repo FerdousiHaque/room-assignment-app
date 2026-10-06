@@ -253,6 +253,7 @@ Runs in this order for a given date:
     and a real provider still without a room takes a placeholder's room, so
     nobody real is "Not Found" while rooms are held by hidden placeholders.
 19. **Home desk first** — a desk's own Doctors/Fellows always get that desk's rooms before visitors from other desks: if a foreign provider holds a room while the home Doctor/Fellow has none, the visitor is moved elsewhere (Nurses are the ones relocated to other desks).
+20. **Never split across desks** — a provider who needs 2 rooms gets both on ONE desk. If only one room can be found, they keep it at their default desk (the other shows "Not Found") and any stray room on another desk is freed for a provider who has none.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's

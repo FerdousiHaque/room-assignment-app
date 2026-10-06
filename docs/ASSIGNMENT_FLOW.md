@@ -152,6 +152,7 @@ FUNCTION generateDailyAssignments(desks, rooms, providers, dayEntries, roomBlock
 
     // Phase 4: cross-check
     REPEAT up to 4 times while something changes:
+        collapseSplitProviders()      // 2-room provider on two desks -> keep home desk's room, free the other
         runFallbackPass()
         tryImproveVideoCapableFit()   // swap into a video-capable room when needed and safe
 
@@ -204,7 +205,7 @@ FUNCTION scoreRoom(room, entry, preferredRoomId):
 | No room needed (Doctor/Fellow, all virtual) | filter in `generateDailyAssignments` |
 | Doctor → Fellow → Any → Nurse order | `tierOf`, `TYPE_PRIORITY` |
 | Contested room tie-break | `orderedDeskEntries` sort |
-| Never split across desks | `runOverflowAndValidate` |
+| Never split across desks | `runOverflowAndValidate`, `deskSearchOrder` (desk lock), `collapseSplitProviders` |
 | Two-room adjacency and hallway | `roomsAdjacentById`, `sameHall`, `tryFixAdjacency` |
 | West "6" rule | `roomForbiddenFor` |
 | Home desk first (Doctor/Fellow reclaim own desk's rooms) | `findEvictableForeign` in `runFallbackPass` |
