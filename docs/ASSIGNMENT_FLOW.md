@@ -58,7 +58,7 @@ flowchart TD
     T2 --> T3["runOverflowAndValidate<br/>whole provider to ONE alternate desk"]
     T3 --> T
     T --> FB["runFallbackPass<br/>every desk, any open room"]
-    FB --> FB2["last resort: take a placeholder's room<br/>findEvictablePseudo<br/>or bump a Nurse / loosely placed provider<br/>findEvictableNurse, findEvictableOccupant"]
+    FB --> FB2["last resort: take a placeholder's room<br/>findEvictablePseudo<br/>home Doctor/Fellow reclaims own desk: findEvictableForeign<br/>or bump a Nurse / loosely placed provider<br/>findEvictableNurse, findEvictableOccupant"]
     FB2 --> CC["Cross-check loop up to 4 times:<br/>runFallbackPass + tryImproveVideoCapableFit"]
     CC --> ADJ["Final adjacency repair up to 4 times:<br/>tryFixAdjacency"]
     ADJ --> WARN["Final warnings:<br/>Not Found, not adjacent / different hallways,<br/>checkVideoCapable"]
@@ -143,6 +143,8 @@ FUNCTION generateDailyAssignments(desks, rooms, providers, dayEntries, roomBlock
                 fillMissingSlots(desk, entry, missing slots)
             IF still missing (real providers only):
                 1. findEvictablePseudo     -> take a placeholder's room
+                1b. Doctor/Fellow only: findEvictableForeign -> take back a room at the
+                    HOME desk from a foreign provider, relocateEvictedOccupant
                 2. findEvictableNurse      -> bump a Nurse, relocateEvictedNurse
                 3. second room of a pair: findEvictableOccupant -> relocateEvictedOccupant
                    (same or lower priority, never fixed-room, rolled back if the evicted
@@ -205,5 +207,6 @@ FUNCTION scoreRoom(room, entry, preferredRoomId):
 | Never split across desks | `runOverflowAndValidate` |
 | Two-room adjacency and hallway | `roomsAdjacentById`, `sameHall`, `tryFixAdjacency` |
 | West "6" rule | `roomForbiddenFor` |
+| Home desk first (Doctor/Fellow reclaim own desk's rooms) | `findEvictableForeign` in `runFallbackPass` |
 | Nurse never left without a room | `runFallbackPass`, `findEvictablePseudo` |
 | Printed report | `downloadDeskAssignmentPdf` |

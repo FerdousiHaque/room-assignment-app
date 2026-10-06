@@ -302,6 +302,12 @@
  *    provider (Nurses included) still missing a room takes a room held by a
  *    placeholder outright, so a real provider is never "Not Found" while
  *    rooms sit occupied by names that don't appear in the report.
+ * 30. NEW — home-desk priority: a Doctor/Fellow with no room takes one at
+ *    their OWN desk back from any foreign (overflowed) provider
+ *    (findEvictableForeign in runFallbackPass). The visitor is relocated if
+ *    possible (else "Not Found"); Nurses are then the ones moved to other
+ *    desks. A foreign provider never keeps a room at a desk while that
+ *    desk's own Doctor/Fellow has none.
  * ------------------------------------------------------------------
  */
 
@@ -1148,6 +1154,27 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return { providerId: occupantId, assignment: occAssignment, slotIndex };
   };
 
+  // Rule #30 — home-desk priority. Returns an occupant of `roomId` (during
+  // `neededSession`) who is NOT from `deskId` (an overflowed/foreign provider
+  // of any type), so a Doctor/Fellow of that desk who has no room can take it
+  // back. Never a pseudo entry, never the requester, never a fixed-room
+  // reservation with patients that day.
+  const findEvictableForeign = (roomId, neededSession, requestingEntry, deskId) => {
+    const s = roomState[roomId];
+    const occupantId =
+      neededSession === 'FULL' ? s.amOccupant || s.pmOccupant : neededSession === 'AM' ? s.amOccupant : s.pmOccupant;
+    if (!occupantId || occupantId === requestingEntry.providerId) return null;
+    if (occupantId.startsWith('unmatched-')) return null;
+    const occAssignment = assignments.find((a) => a.providerId === occupantId);
+    const occEntry = workingEntries.find((e) => e.providerId === occupantId);
+    if (!occAssignment || !occEntry) return null;
+    if (occEntry.provider.homeDeskId === deskId) return null;
+    if (occEntry.provider.fixedRoom && occEntry.patientCount > 0) return null;
+    const slotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+    if (slotIndex === -1) return null;
+    return { providerId: occupantId, assignment: occAssignment, entry: occEntry, slotIndex };
+  };
+
   // Returns the evictable Nurse (if any) occupying `roomId` during
   // `neededSession` — never a Doctor/Fellow/Any-type provider, and never a
   // fixed-room reservation with patients that day.
@@ -1460,6 +1487,34 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         }
         if (filledByPseudoEviction) continue;
         if (!allowEvict) continue; // Nurses never bump other real providers
+
+        // Rule #30 — a Doctor/Fellow with no room takes one at their OWN
+        // desk back from any foreign (overflowed) provider. The displaced
+        // provider is relocated if possible; otherwise they end up "Not
+        // Found" (home-desk providers always outrank visitors).
+        if (['Doctor', 'Fellow'].includes(entry.provider.type) && entry.provider.homeDeskId && deskById[entry.provider.homeDeskId]) {
+          const homeDesk = deskById[entry.provider.homeDeskId];
+          let reclaimed = false;
+          for (const roomId of slotEligibleRoomIds(homeDesk.id, entry, slotIndex, anchorRoomId)) {
+            const fHit = findEvictableForeign(roomId, entry.session, entry, homeDesk.id);
+            if (!fHit) continue;
+            release(roomId, fHit.assignment.session);
+            if (!canFit(roomId, entry.session)) {
+              occupy(roomId, fHit.assignment.session, fHit.providerId);
+              continue;
+            }
+            occupy(roomId, entry.session, entry.providerId);
+            assignment.roomSlots[slotIndex] = { roomId, deskId: homeDesk.id, isOverflow: false };
+            fHit.assignment.roomSlots[fHit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
+            logs.push(`Returning ${homeDesk.name}'s room to ${entry.provider.name}; moving ${fHit.entry.provider.name} elsewhere`);
+            const relocated = relocateEvictedOccupant(fHit);
+            if (relocated) fHit.assignment.roomSlots[fHit.slotIndex] = relocated;
+            changed = true;
+            reclaimed = true;
+            break;
+          }
+          if (reclaimed) continue;
+        }
 
         let filledByEviction = false;
         outer: for (const desk of deskSearchOrder(entry)) {
