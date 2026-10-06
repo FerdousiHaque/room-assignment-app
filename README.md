@@ -239,6 +239,19 @@ Runs in this order for a given date:
     the next. Whatever still can't be made adjacent after every attempt is
     left exactly as it was and flagged with a warning for manual review,
     rather than looping forever or dropping anyone's room.
+15. **Two in-person visits 2+ hours apart → one room** — a provider
+    configured for 2 rooms with exactly two in-person visits all day
+    (video/telephone ignored) whose start times are at least 2 hours apart
+    gets one room, even if both visits are in the same half-day.
+16. **West desk** — in a desk named/identified "west", rooms whose code
+    starts with `6` can't be used by a Doctor or Fellow (any other type may).
+17. **Same hallway** — "adjacent" also requires the same `hall`; the second
+    room is picked adjacent+same hall, else same hall, else any open room,
+    and the final adjacency pass (step 14) repairs cross-hall pairs. An
+    explicit Primary + Second Preferred pair is still honored as set.
+18. **Unmatched-name placeholders go last** — they're placed after Nurses,
+    and a real provider still without a room takes a placeholder's room, so
+    nobody real is "Not Found" while rooms are held by hidden placeholders.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's

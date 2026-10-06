@@ -275,10 +275,39 @@
  *    be made adjacent after every attempt is left exactly as it was and
  *    flagged as a warning for manual review, rather than looping forever
  *    or dropping anyone's room.
+ * 26. NEW — two in-person visits >= 2 hours apart need only ONE room: a
+ *    provider configured for 2 rooms whose day has exactly two in-person
+ *    visits (video/telephone ignored) with start times at least 120 minutes
+ *    apart (MIN_GAP_FOR_ONE_ROOM_MINUTES) gets 1 room even when both fall in
+ *    the same half-day. Checked first in computeEffectiveRoomsNeeded, ahead
+ *    of the per-half-day rule (#22); needs entry.inPersonMinutes (pdfParser).
+ * 27. NEW — West desk rule: in a desk whose name/id contains "west", a room
+ *    whose code starts with "6" can never be used by a Doctor or Fellow
+ *    (roomForbiddenFor). Enforced everywhere a room is chosen — preferences,
+ *    Other Set/Alt desk rooms lists, generic scoring, eviction/relocation,
+ *    adjacency repair, video swaps and fixed-room reservations (a fixed
+ *    Doctor/Fellow room that breaks the rule shows "Not Found" + a warning).
+ *    Nurses and Any-type providers may use those rooms.
+ * 28. NEW — same hallway: rooms may carry a `hall`. "Adjacent" (#17) now also
+ *    requires the same hall (roomsAdjacentById), so 22E/24E in two different
+ *    hallways is not a pair. For slot 1 the order is: adjacent+same hall,
+ *    then any open room in the same hall, then (last resort, never leaving
+ *    Not Found) any open room. Other Set/Alt pairs must share a hall, the
+ *    final repair pass (#25) treats a cross-hall pair as invalid, and video
+ *    swaps never move one room of a pair into another hall. A room with no
+ *    hall set is never treated as being in a different hallway. An explicit
+ *    Primary + Second Preferred pair stays exempt (#25).
+ * 29. NEW — unmatched-name placeholders go last: pseudo ("unmatched-") entries
+ *    are placed in their own tier AFTER Nurse, and as a last resort ANY real
+ *    provider (Nurses included) still missing a room takes a room held by a
+ *    placeholder outright, so a real provider is never "Not Found" while
+ *    rooms sit occupied by names that don't appear in the report.
  * ------------------------------------------------------------------
  */
 
 const NOON = 12 * 60;
+// Rule #26 — two in-person visits at least this far apart share one room.
+const MIN_GAP_FOR_ONE_ROOM_MINUTES = 120;
 
 function timeRangeOverlaps(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && bStart < aEnd;
@@ -331,6 +360,13 @@ function computeEffectiveRoomsNeeded(provider, entry) {
   const type = (provider && provider.type) || 'Any';
   if (type === 'Nurse') return 1;
   if (configured !== 2) return configured;
+  // Exactly two in-person visits all day (video/telephone ignored) spaced at
+  // least 2 hours apart (start time to start time) never overlap in time, so
+  // one room is enough even when both fall in the same half-day.
+  const mins = entry.inPersonMinutes;
+  if (Array.isArray(mins) && entry.inPersonPatientCount === 2 && mins.length === 2) {
+    if (Math.abs(mins[0] - mins[1]) >= MIN_GAP_FOR_ONE_ROOM_MINUTES) return 1;
+  }
   const amCount = entry.inPersonAmCount;
   const pmCount = entry.inPersonPmCount;
   if (amCount === undefined || pmCount === undefined) return configured;
@@ -425,6 +461,36 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     roomState[r.id] = { room: r, amOccupant: null, pmOccupant: null };
     (roomsByDesk[r.deskId] ||= []).push(r.id);
   }
+
+  // ---- Rule #27 / #28 helpers -------------------------------------------
+  // Hallway (rule #28): rooms carry an optional `hall`. Two rooms count as
+  // "the same hallway" unless BOTH have a hall set and the halls differ (a
+  // room with no hall configured can't be shown to be in another hallway).
+  const hallOf = (roomId) => roomState[roomId]?.room.hall || null;
+  const sameHall = (idA, idB) => {
+    const a = hallOf(idA);
+    const b = hallOf(idB);
+    return !a || !b || a === b;
+  };
+  // "Beside each other" (#17) now ALSO requires the same hallway: 22E/24E in
+  // two different halls are not a valid pair.
+  const roomsAdjacentById = (idA, idB) =>
+    Boolean(idA && idB) &&
+    roomsAdjacent(roomState[idA]?.room.code, roomState[idB]?.room.code) &&
+    sameHall(idA, idB);
+
+  // West-desk rule (#27): in a desk whose name/id contains "west", a room
+  // whose code starts with "6" can never be used by a Doctor or Fellow.
+  const westDeskIds = new Set(
+    desks.filter((d) => /west/i.test(d.name || '') || /west/i.test(d.id || '')).map((d) => d.id)
+  );
+  const roomForbiddenFor = (entry, roomId) => {
+    const type = entry.provider?.type || 'Any';
+    if (type !== 'Doctor' && type !== 'Fellow') return false;
+    const room = roomState[roomId]?.room;
+    if (!room || !westDeskIds.has(room.deskId)) return false;
+    return String(room.code || '').trim().startsWith('6');
+  };
 
   const isBlocked = (roomId, session) => {
     const b = blockedSlots[roomId];
@@ -554,19 +620,26 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return score;
   };
 
-  // `requireAdjacentToCode`, when set, hard-filters candidates to only
-  // rooms adjacent (rule #17) to that room code, before any scoring runs.
+  // `requireAdjacentToRoomId`, when set, hard-filters candidates to only
+  // rooms adjacent (rule #17, same hallway too — #28) to that room, before
+  // any scoring runs.
   // `restrictToRoomIds`, when set, further narrows candidates to exactly
   // that set (e.g. the rooms matching a provider's otherPreferredRoomCodes
   // at this desk) before scoring picks the best of them.
-  const pickRoom = (deskId, entry, preferredRoomId, alreadyPicked, requireAdjacentToCode = null, restrictToRoomIds = null) => {
-    let candidates = (roomsByDesk[deskId] || []).filter((id) => canFit(id, entry.session));
+  // `requireSameHallAsRoomId` (rule #28) hard-filters to rooms in the same
+  // hallway as that room. Rooms the entry may never use (rule #27) are
+  // always filtered out first.
+  const pickRoom = (deskId, entry, preferredRoomId, alreadyPicked, requireAdjacentToRoomId = null, restrictToRoomIds = null, requireSameHallAsRoomId = null) => {
+    let candidates = (roomsByDesk[deskId] || []).filter((id) => canFit(id, entry.session) && !roomForbiddenFor(entry, id));
     if (restrictToRoomIds) {
       const allowed = new Set(restrictToRoomIds);
       candidates = candidates.filter((id) => allowed.has(id));
     }
-    if (requireAdjacentToCode) {
-      candidates = candidates.filter((id) => roomsAdjacent(roomState[id].room.code, requireAdjacentToCode));
+    if (requireAdjacentToRoomId) {
+      candidates = candidates.filter((id) => roomsAdjacentById(id, requireAdjacentToRoomId));
+    }
+    if (requireSameHallAsRoomId) {
+      candidates = candidates.filter((id) => sameHall(id, requireSameHallAsRoomId));
     }
     if (candidates.length === 0) return null;
     candidates.sort((a, b) => scoreRoom(b, entry, preferredRoomId, alreadyPicked) - scoreRoom(a, entry, preferredRoomId, alreadyPicked));
@@ -641,14 +714,15 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
    *   - Only slot 0 still missing (a 1-room provider, or slot 1 already
    *     filled): plain first-open-in-order, no adjacency concept applies.
    */
-  const tryOrderedList = (ids, stillMissing, pickedSoFar, filled, entry, anchorCodeForSlot1) => {
+  const tryOrderedList = (rawIds, stillMissing, pickedSoFar, filled, entry, anchorRoomIdForSlot1) => {
+    const ids = rawIds.filter((id) => !roomForbiddenFor(entry, id));
     if (ids.length === 0) return false;
 
     if (stillMissing.length === 2) {
       for (let i = 0; i + 1 < ids.length; i += 2) {
         const a = ids[i];
         const b = ids[i + 1];
-        if (a !== b && canFit(a, entry.session) && canFit(b, entry.session)) {
+        if (a !== b && canFit(a, entry.session) && canFit(b, entry.session) && sameHall(a, b)) {
           filled[stillMissing[0]] = a;
           filled[stillMissing[1]] = b;
           occupy(a, entry.session, entry.providerId);
@@ -664,12 +738,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     const need2 = entry.effectiveRoomsNeeded === 2;
     let candidateIds = ids;
     if (need2 && slotIndex === 1) {
-      const anchorCode = filled[0] !== undefined ? roomState[filled[0]]?.room.code || null : anchorCodeForSlot1;
-      if (anchorCode) {
-        const adjacent = ids.filter((id) => roomsAdjacent(roomState[id].room.code, anchorCode));
-        if (adjacent.length > 0) {
-          candidateIds = [...adjacent, ...ids.filter((id) => !adjacent.includes(id))];
-        }
+      const anchorRoomId = filled[0] !== undefined ? filled[0] : anchorRoomIdForSlot1;
+      if (anchorRoomId) {
+        // adjacent (and same hallway) first, then same hallway, then the rest
+        const adjacent = ids.filter((id) => roomsAdjacentById(id, anchorRoomId));
+        const hallmates = ids.filter((id) => !adjacent.includes(id) && sameHall(id, anchorRoomId));
+        candidateIds = [...adjacent, ...hallmates, ...ids.filter((id) => !adjacent.includes(id) && !hallmates.includes(id))];
       }
     }
     for (const id of candidateIds) {
@@ -711,7 +785,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
    * every occupy() needed for a fill already happened by the time this
    * returns.
    */
-  const fillMissingSlots = (deskId, entry, missingSlotIndexes, anchorCodeForSlot1) => {
+  const fillMissingSlots = (deskId, entry, missingSlotIndexes, anchorRoomIdForSlot1) => {
     const filled = {};
     const pickedSoFar = [];
 
@@ -722,7 +796,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         preferredRoomId &&
         !pickedSoFar.includes(preferredRoomId) &&
         roomState[preferredRoomId]?.room.deskId === deskId &&
-        canFit(preferredRoomId, entry.session)
+        canFit(preferredRoomId, entry.session) &&
+        !roomForbiddenFor(entry, preferredRoomId)
       ) {
         filled[slotIndex] = preferredRoomId;
         occupy(preferredRoomId, entry.session, entry.providerId);
@@ -735,7 +810,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     // Step 2: "Other Set of Rooms" (otherPreferredRoomCodes) — ordered,
     // exhaustive; see tryOrderedList.
     if (stillMissing.length > 0) {
-      tryOrderedList(otherSetRoomIdsInOrder(deskId, entry), stillMissing, pickedSoFar, filled, entry, anchorCodeForSlot1);
+      tryOrderedList(otherSetRoomIdsInOrder(deskId, entry), stillMissing, pickedSoFar, filled, entry, anchorRoomIdForSlot1);
     }
 
     stillMissing = missingSlotIndexes.filter((i) => filled[i] === undefined);
@@ -744,7 +819,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     // treatment, only when `deskId` is one of this provider's checked
     // alternate desks (altDeskRoomIdsInOrder resolves to [] otherwise).
     if (stillMissing.length > 0) {
-      tryOrderedList(altDeskRoomIdsInOrder(deskId, entry), stillMissing, pickedSoFar, filled, entry, anchorCodeForSlot1);
+      tryOrderedList(altDeskRoomIdsInOrder(deskId, entry), stillMissing, pickedSoFar, filled, entry, anchorRoomIdForSlot1);
     }
 
     stillMissing = missingSlotIndexes.filter((i) => filled[i] === undefined);
@@ -759,12 +834,17 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     for (const slotIndex of stillMissing) {
       let roomId;
       if (slotIndex === 1 && entry.effectiveRoomsNeeded === 2) {
-        const anchorCode = filled[0] !== undefined ? roomState[filled[0]]?.room.code || null : anchorCodeForSlot1;
-        roomId = anchorCode ? pickRoom(deskId, entry, null, pickedSoFar, anchorCode) : null;
-        // No adjacent room open (or no anchor at all, e.g. slot 0 itself
-        // is still missing too) — rather than leave this slot "Not Found"
-        // while a different, non-adjacent room at this desk sits empty,
-        // fall back to any open room here, same as slot 0's rule.
+        const anchorRoomId = filled[0] !== undefined ? filled[0] : anchorRoomIdForSlot1;
+        roomId = anchorRoomId ? pickRoom(deskId, entry, null, pickedSoFar, anchorRoomId) : null;
+        // No adjacent room open — prefer ANY open room in the same hallway
+        // (rule #28: a provider isn't split across hallways while a
+        // same-hallway room is open)...
+        if (!roomId && anchorRoomId) {
+          roomId = pickRoom(deskId, entry, null, pickedSoFar, null, null, anchorRoomId);
+        }
+        // ...and only then, rather than leave this slot "Not Found" while a
+        // different room at this desk sits empty, fall back to any open
+        // room here, same as slot 0's rule.
         if (!roomId) {
           roomId = pickRoom(deskId, entry, null, pickedSoFar);
         }
@@ -791,10 +871,10 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
    * pickSlotRoom) still has something to check against.
    * Returns an array of { roomId: string|null, deskId, isOverflow }.
    */
-  const placeSlots = (deskId, entry, count, slotOffset, isOverflow, anchorCode = null) => {
+  const placeSlots = (deskId, entry, count, slotOffset, isOverflow, anchorRoomId = null) => {
     const missingSlotIndexes = [];
     for (let i = 0; i < count; i++) missingSlotIndexes.push(slotOffset + i);
-    const filled = fillMissingSlots(deskId, entry, missingSlotIndexes, anchorCode);
+    const filled = fillMissingSlots(deskId, entry, missingSlotIndexes, anchorRoomId);
     return missingSlotIndexes.map((slotIndex) => {
       const roomId = filled[slotIndex];
       return roomId ? { roomId, deskId, isOverflow } : { roomId: null, deskId: null, isOverflow: false };
@@ -833,7 +913,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         : i === 1
         ? entry.provider.secondPreferredRoomId
         : null;
-      if (preferredRoomId && canFit(preferredRoomId, entry.session)) {
+      if (preferredRoomId && canFit(preferredRoomId, entry.session) && !roomForbiddenFor(entry, preferredRoomId)) {
         occupy(preferredRoomId, entry.session, entry.providerId);
         const roomDeskId = roomState[preferredRoomId]?.room.deskId ?? homeDesk.id;
         slots.push({ roomId: preferredRoomId, deskId: roomDeskId, isOverflow: false });
@@ -842,7 +922,9 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         if (!entry.provider.suppressWarnings) {
           const which = i === 0 ? 'primary' : 'second';
           warnings.push(
-            preferredRoomId
+            preferredRoomId && roomForbiddenFor(entry, preferredRoomId)
+              ? `${entry.provider.name} has a fixed room (${roomState[preferredRoomId]?.room.code}) that a ${entry.provider.type} can't use (West desk rooms starting with "6" are off-limits to Doctors and Fellows) — shown as "Not Found".`
+              : preferredRoomId
               ? `${entry.provider.name} has a fixed room, but their ${which} room isn't available today — shown as "Not Found" (fixed-room providers are never moved to a different room).`
               : `${entry.provider.name} is marked "Fixed room" but has no ${which} preferred room set — shown as "Not Found".`
           );
@@ -944,8 +1026,14 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     }
   };
 
-  for (let tier = 0; tier < TYPE_PRIORITY.length; tier++) {
-    const tierEntries = normalEntries.filter((e) => typeRank(e.provider.type) === tier);
+  // Rule #29: unmatched-name ("pseudo") entries are placed in a tier of their
+  // own AFTER Nurse, so they can only ever take rooms every real provider has
+  // already been placed around — they used to share the Any tier and could
+  // grab rooms ahead of real Nurses (rooms that then looked empty in the
+  // export, since pseudo entries are left out of the report).
+  const tierOf = (e) => (e.providerId.startsWith('unmatched-') ? TYPE_PRIORITY.length : typeRank(e.provider.type));
+  for (let tier = 0; tier <= TYPE_PRIORITY.length; tier++) {
+    const tierEntries = normalEntries.filter((e) => tierOf(e) === tier);
     if (tierEntries.length === 0) continue;
 
     const tierEntriesByDesk = {};
@@ -1025,9 +1113,9 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   // also consider bumping someone out of a named preference before it ever
   // considers an adjacency-only candidate: secondPreferredRoomId, then
   // Other Set of Rooms / Alt desk rooms matches at this desk (if any exist
-  // at all), then — only when none exist — rooms adjacent to `anchorCode`.
-  const slotEligibleRoomIds = (deskId, entry, slotIndex, anchorCode) => {
-    const allIds = roomsByDesk[deskId] || [];
+  // at all), then — only when none exist — rooms adjacent to `anchorRoomId`.
+  const slotEligibleRoomIds = (deskId, entry, slotIndex, anchorRoomId) => {
+    const allIds = (roomsByDesk[deskId] || []).filter((id) => !roomForbiddenFor(entry, id));
     const need2 = entry.effectiveRoomsNeeded === 2;
     if (!need2 || slotIndex !== 1) return allIds;
 
@@ -1037,9 +1125,27 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     for (const id of [...otherSetRoomIdsInOrder(deskId, entry), ...altDeskRoomIdsInOrder(deskId, entry)]) {
       if (!named.includes(id)) named.push(id);
     }
-    if (named.length > 0) return named;
-    if (!anchorCode) return [];
-    return allIds.filter((id) => roomsAdjacent(roomState[id].room.code, anchorCode));
+    const namedOk = named.filter((id) => !roomForbiddenFor(entry, id));
+    if (namedOk.length > 0) return namedOk;
+    if (!anchorRoomId) return [];
+    return allIds.filter((id) => roomsAdjacentById(id, anchorRoomId));
+  };
+
+  // Rule #29: returns an unmatched-name ("pseudo") occupant of `roomId` during
+  // `neededSession`, if that's who holds it. Pseudo entries aren't real
+  // providers (they're left out of the report and exempt from the
+  // never-drop guarantee, #10), so a real provider who can't find any other
+  // room may simply take their room — nobody real is displaced.
+  const findEvictablePseudo = (roomId, neededSession) => {
+    const s = roomState[roomId];
+    const occupantId =
+      neededSession === 'FULL' ? s.amOccupant || s.pmOccupant : neededSession === 'AM' ? s.amOccupant : s.pmOccupant;
+    if (!occupantId || !occupantId.startsWith('unmatched-')) return null;
+    const occAssignment = assignments.find((a) => a.providerId === occupantId);
+    if (!occAssignment) return null;
+    const slotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+    if (slotIndex === -1) return null;
+    return { providerId: occupantId, assignment: occAssignment, slotIndex };
   };
 
   // Returns the evictable Nurse (if any) occupying `roomId` during
@@ -1069,13 +1175,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     const nurseEntry = hit.entry;
     const nurseAssignment = hit.assignment;
     const need2 = nurseEntry.effectiveRoomsNeeded === 2;
-    let anchorCode = null;
+    let anchorRoomId = null;
     if (need2 && hit.slotIndex === 1) {
-      const slot0RoomId = nurseAssignment.roomSlots[0]?.roomId;
-      anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
+      anchorRoomId = nurseAssignment.roomSlots[0]?.roomId || null;
     }
     for (const desk of deskSearchOrder(nurseEntry)) {
-      const result = fillMissingSlots(desk.id, nurseEntry, [hit.slotIndex], anchorCode);
+      const result = fillMissingSlots(desk.id, nurseEntry, [hit.slotIndex], anchorRoomId);
       const roomId = result[hit.slotIndex];
       if (roomId) {
         nurseAssignment.roomSlots[hit.slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== nurseEntry.provider.homeDeskId };
@@ -1122,13 +1227,12 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
   const relocateEvictedOccupant = (hit) => {
     const occEntry = hit.entry;
     const need2 = occEntry.effectiveRoomsNeeded === 2;
-    let anchorCode = null;
+    let anchorRoomId = null;
     if (need2 && hit.slotIndex === 1) {
-      const slot0RoomId = hit.assignment.roomSlots[0]?.roomId;
-      anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
+      anchorRoomId = hit.assignment.roomSlots[0]?.roomId || null;
     }
     for (const desk of deskSearchOrder(occEntry)) {
-      const result = fillMissingSlots(desk.id, occEntry, [hit.slotIndex], anchorCode);
+      const result = fillMissingSlots(desk.id, occEntry, [hit.slotIndex], anchorRoomId);
       const roomId = result[hit.slotIndex];
       if (roomId) {
         return { roomId, deskId: desk.id, isOverflow: desk.id !== occEntry.provider.homeDeskId };
@@ -1213,21 +1317,19 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     const slot0 = assignment.roomSlots[0];
     const slot1 = assignment.roomSlots[1];
     if (!slot0?.roomId || !slot1?.roomId) return false; // only a fully-filled pair can be "non-adjacent"
-    const code0 = roomState[slot0.roomId]?.room.code;
-    const code1 = roomState[slot1.roomId]?.room.code;
-    if (roomsAdjacent(code0, code1)) return false; // already fine
+    if (roomsAdjacentById(slot0.roomId, slot1.roomId)) return false; // already fine (adjacent AND same hallway)
 
     for (const anchorSlotIndex of [0, 1]) {
       const otherSlotIndex = anchorSlotIndex === 0 ? 1 : 0;
       const anchorRoomId = assignment.roomSlots[anchorSlotIndex].roomId;
-      const anchorCode = roomState[anchorRoomId]?.room.code;
-      if (!anchorCode) continue;
+      if (!roomState[anchorRoomId]) continue;
       const oldOtherRoomId = assignment.roomSlots[otherSlotIndex].roomId;
 
       for (const desk of deskSearchOrder(entry)) {
         for (const roomId of roomsByDesk[desk.id] || []) {
           if (roomId === anchorRoomId || roomId === oldOtherRoomId) continue;
-          if (!roomsAdjacent(roomState[roomId].room.code, anchorCode)) continue;
+          if (!roomsAdjacentById(roomId, anchorRoomId)) continue;
+          if (roomForbiddenFor(entry, roomId)) continue;
 
           if (canFit(roomId, entry.session)) {
             release(oldOtherRoomId, entry.session);
@@ -1309,10 +1411,8 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
           .map((s, i) => (s.roomId === null ? i : -1))
           .filter((i) => i !== -1);
         if (missingSlotIndexes.length === 0) break;
-        const anchorCodeForSlot1 = assignment.roomSlots[0]?.roomId
-          ? roomState[assignment.roomSlots[0].roomId]?.room.code || null
-          : null;
-        const result = fillMissingSlots(desk.id, entry, missingSlotIndexes, anchorCodeForSlot1);
+        const anchorRoomIdForSlot1 = assignment.roomSlots[0]?.roomId || null;
+        const result = fillMissingSlots(desk.id, entry, missingSlotIndexes, anchorRoomIdForSlot1);
         for (const slotIndex of missingSlotIndexes) {
           const roomId = result[slotIndex];
           if (roomId) {
@@ -1328,19 +1428,42 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       // Nurse or pseudo entry itself) out of a room that would fit. Same
       // priority order as the first pass: a named preference / other-set
       // room is tried for eviction before an adjacency-only candidate.
-      if (!allowEvict) continue;
+      if (isPseudo) continue;
       for (let slotIndex = 0; slotIndex < assignment.roomSlots.length; slotIndex++) {
         if (assignment.roomSlots[slotIndex].roomId !== null) continue;
 
-        let anchorCode = null;
+        let anchorRoomId = null;
         if (need2 && slotIndex === 1) {
-          const slot0RoomId = assignment.roomSlots[0]?.roomId;
-          anchorCode = slot0RoomId ? roomState[slot0RoomId]?.room.code || null : null;
+          anchorRoomId = assignment.roomSlots[0]?.roomId || null;
         }
+
+        // Rule #29 (last resort, ANY real provider incl. Nurses): a room held
+        // only by an unmatched-name placeholder is taken outright.
+        let filledByPseudoEviction = false;
+        pseudoOuter: for (const desk of deskSearchOrder(entry)) {
+          for (const roomId of slotEligibleRoomIds(desk.id, entry, slotIndex, anchorRoomId)) {
+            const pHit = findEvictablePseudo(roomId, entry.session);
+            if (!pHit) continue;
+            release(roomId, pHit.assignment.session);
+            if (!canFit(roomId, entry.session)) {
+              occupy(roomId, pHit.assignment.session, pHit.providerId);
+              continue;
+            }
+            occupy(roomId, entry.session, entry.providerId);
+            assignment.roomSlots[slotIndex] = { roomId, deskId: desk.id, isOverflow: desk.id !== entry.provider.homeDeskId };
+            pHit.assignment.roomSlots[pHit.slotIndex] = { roomId: null, deskId: null, isOverflow: false };
+            logs.push(`Giving ${entry.provider.name} a room held by an unmatched-name placeholder`);
+            changed = true;
+            filledByPseudoEviction = true;
+            break pseudoOuter;
+          }
+        }
+        if (filledByPseudoEviction) continue;
+        if (!allowEvict) continue; // Nurses never bump other real providers
 
         let filledByEviction = false;
         outer: for (const desk of deskSearchOrder(entry)) {
-          const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorCode);
+          const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorRoomId);
           for (const roomId of roomIds) {
             const nurseHit = findEvictableNurse(roomId, entry.session);
             if (!nurseHit) continue;
@@ -1374,9 +1497,9 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         // occupant can genuinely be relocated to another open room in
         // this same attempt (relocateEvictedOccupant); otherwise the whole
         // thing is rolled back and this slot is left exactly as it was.
-        if (need2 && slotIndex === 1 && anchorCode) {
+        if (need2 && slotIndex === 1 && anchorRoomId) {
           outer2: for (const desk of deskSearchOrder(entry)) {
-            const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorCode);
+            const roomIds = slotEligibleRoomIds(desk.id, entry, slotIndex, anchorRoomId);
             for (const roomId of roomIds) {
               const occHit = findEvictableOccupant(roomId, entry.session, entry);
               if (!occHit) continue;
@@ -1444,6 +1567,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
         for (const roomId of roomsByDesk[desk.id] || []) {
           const room = roomState[roomId].room;
           if (!room.videoCapable) continue;
+          if (roomForbiddenFor(entry, roomId)) continue;
           if (assignment.roomSlots.some((s) => s.roomId === roomId)) continue; // already theirs
 
           const s = roomState[roomId];
@@ -1460,6 +1584,9 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
           if (occSlotIndex === -1) continue;
 
           for (const mySlotIndex of filledSlotIndexes) {
+            // Rule #28: never swap one room of a pair into another hallway.
+            const partnerSlot = assignment.roomSlots[mySlotIndex === 0 ? 1 : 0];
+            if (partnerSlot?.roomId && !sameHall(partnerSlot.roomId, roomId)) continue;
             const myOldSlot = { ...assignment.roomSlots[mySlotIndex] };
             const occOldSlot = { ...occAssignment.roomSlots[occSlotIndex] };
 
@@ -1578,12 +1705,13 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
       // An explicit Primary + Second Preferred Room pair is exempt from
       // this check entirely (see isExplicitPrimarySecondPair) — honored
       // as configured, non-adjacent or not, with no warning.
-      const c0 = roomState[assignment.roomSlots[0].roomId]?.room.code;
-      const c1 = roomState[assignment.roomSlots[1].roomId]?.room.code;
-      if (!roomsAdjacent(c0, c1)) {
-        warnings.push(
-          `${assignment.providerName}: assigned two rooms (${c0}, ${c1}) that aren't adjacent — needs manual review.`
-        );
+      const id0 = assignment.roomSlots[0].roomId;
+      const id1 = assignment.roomSlots[1].roomId;
+      const c0 = roomState[id0]?.room.code;
+      const c1 = roomState[id1]?.room.code;
+      if (!roomsAdjacentById(id0, id1)) {
+        const why = sameHall(id0, id1) ? "aren't adjacent" : 'are in two different hallways';
+        warnings.push(`${assignment.providerName}: assigned two rooms (${c0}, ${c1}) that ${why} — needs manual review.`);
       }
     }
   }

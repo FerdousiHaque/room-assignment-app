@@ -366,6 +366,10 @@ export function deriveDayEntries(rows, providers) {
         // overall inPersonPatientCount above).
         inPersonAmCount: 0,
         inPersonPmCount: 0,
+        // Start time (minutes since midnight) of every in-person visit with a
+        // readable time — lets the engine see whether exactly two in-person
+        // visits are spaced >= 2 hours apart (rule #26).
+        inPersonMinutes: [],
         times: [],
         hasVideoVisit: false,
         seenMrns: new Set()
@@ -383,6 +387,7 @@ export function deriveDayEntries(rows, providers) {
       g.inPersonPatientCount += 1;
       const minutes = row.time ? parseClockTime(row.time) : null;
       if (minutes !== null) {
+        g.inPersonMinutes.push(minutes);
         if (minutes < NOON) g.inPersonAmCount += 1;
         else g.inPersonPmCount += 1;
       }
@@ -398,6 +403,7 @@ export function deriveDayEntries(rows, providers) {
     inPersonPatientCount: g.inPersonPatientCount,
     inPersonAmCount: g.inPersonAmCount,
     inPersonPmCount: g.inPersonPmCount,
+    inPersonMinutes: g.inPersonMinutes,
     soloTime: g.patientCount === 1 ? g.times[0] || null : null,
     session: deriveSession(g.times),
     hasVideoVisit: g.hasVideoVisit
