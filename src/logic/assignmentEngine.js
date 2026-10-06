@@ -313,6 +313,11 @@
  *    other (deskSearchOrder), and collapseSplitProviders frees any stray
  *    room on another desk (keeping the home desk's), which the next fallback
  *    pass gives to a provider who has none.
+ * 32. NEW — adjacency swap: if a non-adjacent pair can't be fixed with an
+ *    open room or a relocatable occupant, the provider trades rooms directly
+ *    with whoever holds an adjacent room (tryFixAdjacency, last step), as long
+ *    as that occupant's own needs (adjacent pair, video room, West "6" rule)
+ *    still hold in the room they receive.
  * ------------------------------------------------------------------
  */
 
@@ -1408,6 +1413,61 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
           );
           return true;
         }
+      }
+    }
+
+    // Rule #32 — swap fallback. Nothing was open and nobody could be
+    // relocated to a free room, so trade rooms directly: the pair-needing
+    // provider takes the room adjacent to their anchor, and its occupant
+    // (any non-fixed provider of equal/lower priority whose own needs still
+    // hold afterwards) takes the room this provider is giving up.
+    for (const anchorSlotIndex of [0, 1]) {
+      const otherSlotIndex = anchorSlotIndex === 0 ? 1 : 0;
+      const anchorRoomId = assignment.roomSlots[anchorSlotIndex].roomId;
+      const oldOtherRoomId = assignment.roomSlots[otherSlotIndex].roomId;
+      const oldRoom = roomState[oldOtherRoomId]?.room;
+      if (!roomState[anchorRoomId] || !oldRoom) continue;
+      const anchorDeskId = roomState[anchorRoomId].room.deskId;
+
+      for (const roomId of roomsByDesk[anchorDeskId] || []) {
+        if (roomId === anchorRoomId || roomId === oldOtherRoomId) continue;
+        if (!roomsAdjacentById(roomId, anchorRoomId)) continue;
+        if (roomForbiddenFor(entry, roomId)) continue;
+        const s = roomState[roomId];
+        const occId = entry.session === 'FULL' ? s.amOccupant || s.pmOccupant : entry.session === 'AM' ? s.amOccupant : s.pmOccupant;
+        if (!occId || occId === entry.providerId || occId.startsWith('unmatched-')) continue;
+        const occAssignment = assignments.find((a) => a.providerId === occId);
+        const occEntry = workingEntries.find((e) => e.providerId === occId);
+        if (!occAssignment || !occEntry) continue;
+        if (occEntry.provider.fixedRoom && occEntry.patientCount > 0) continue;
+        if (typeRank(occEntry.provider.type) < typeRank(entry.provider.type)) continue;
+        const occSlotIndex = occAssignment.roomSlots.findIndex((sl) => sl.roomId === roomId);
+        if (occSlotIndex === -1) continue;
+        if (roomForbiddenFor(occEntry, oldOtherRoomId)) continue;
+        // The occupant's own pair (if any) must stay adjacent and on one desk.
+        if (occEntry.effectiveRoomsNeeded === 2) {
+          const partner = occAssignment.roomSlots[occSlotIndex === 0 ? 1 : 0]?.roomId;
+          if (partner && !roomsAdjacentById(partner, oldOtherRoomId)) continue;
+        }
+        if (occEntry.needsVideoCapable && s.room.videoCapable && !oldRoom.videoCapable) continue;
+
+        release(roomId, occAssignment.session);
+        release(oldOtherRoomId, entry.session);
+        if (!canFit(roomId, entry.session) || !canFit(oldOtherRoomId, occAssignment.session)) {
+          occupy(roomId, occAssignment.session, occId);
+          occupy(oldOtherRoomId, entry.session, entry.providerId);
+          continue;
+        }
+        occupy(roomId, entry.session, entry.providerId);
+        occupy(oldOtherRoomId, occAssignment.session, occId);
+        assignment.roomSlots[otherSlotIndex] = { roomId, deskId: anchorDeskId, isOverflow: anchorDeskId !== entry.provider.homeDeskId };
+        occAssignment.roomSlots[occSlotIndex] = {
+          roomId: oldOtherRoomId,
+          deskId: oldRoom.deskId,
+          isOverflow: oldRoom.deskId !== occEntry.provider.homeDeskId,
+        };
+        logs.push(`Swapped rooms between ${entry.provider.name} and ${occEntry.provider.name} to keep ${entry.provider.name}'s pair adjacent`);
+        return true;
       }
     }
     return false;

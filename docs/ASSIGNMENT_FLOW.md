@@ -206,7 +206,7 @@ FUNCTION scoreRoom(room, entry, preferredRoomId):
 | Doctor → Fellow → Any → Nurse order | `tierOf`, `TYPE_PRIORITY` |
 | Contested room tie-break | `orderedDeskEntries` sort |
 | Never split across desks | `runOverflowAndValidate`, `deskSearchOrder` (desk lock), `collapseSplitProviders` |
-| Two-room adjacency and hallway | `roomsAdjacentById`, `sameHall`, `tryFixAdjacency` |
+| Two-room adjacency and hallway | `roomsAdjacentById`, `sameHall`, `tryFixAdjacency` (open room → relocate occupant → direct swap) |
 | West "6" rule | `roomForbiddenFor` |
 | Home desk first (Doctor/Fellow reclaim own desk's rooms) | `findEvictableForeign` in `runFallbackPass` |
 | Nurse never left without a room | `runFallbackPass`, `findEvictablePseudo` |
