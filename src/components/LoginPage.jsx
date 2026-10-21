@@ -32,7 +32,6 @@ function KidneyCartoon() {
 }
 
 export default function LoginPage() {
-  const [showForm, setShowForm] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -69,35 +68,23 @@ export default function LoginPage() {
         <h1 className="login-title">Nephrology &amp; Hypertension</h1>
         <p className="login-sub">Daily Room Assignments</p>
 
-        {showForm ? (
-          <form className="login-form" onSubmit={submit}>
-            <label>
-              Username
-              <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
-            </label>
-            <label>
-              Password
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
-            </label>
-            {error && <p className="login-error">{error}</p>}
-            <button type="submit" className="login-btn login-btn-admin" disabled={busy}>
-              {busy ? 'Checking…' : 'Login'}
-            </button>
-            <button type="button" className="login-link" onClick={() => { setShowForm(false); setError(''); }}>
-              Back
-            </button>
-          </form>
-        ) : (
-          <div className="login-buttons">
-            <button type="button" className="login-btn login-btn-admin" onClick={() => setShowForm(true)} disabled={busy}>
-              Admin Login
-            </button>
-            <button type="button" className="login-btn login-btn-team" onClick={goTeam} disabled={busy}>
-              As a team member
-            </button>
-            {error && <p className="login-error">{error}</p>}
-          </div>
-        )}
+        <form className="login-form" onSubmit={submit}>
+          <label>
+            Username or email
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+          </label>
+          <label>
+            Password
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+          </label>
+          {error && <p className="login-error">{error}</p>}
+          <button type="submit" className="login-btn login-btn-admin" disabled={busy || !username.trim() || !password}>
+            {busy ? 'Checking…' : 'Admin Login'}
+          </button>
+          <button type="button" className="login-btn login-btn-team" onClick={goTeam} disabled={busy}>
+            As a team member
+          </button>
+        </form>
       </div>
     </div>
   );

@@ -308,7 +308,7 @@ function MainApp({ role, onLogout }) {
         )}
         <div className="header-user">
           <span className={`role-badge ${isAdmin ? '' : 'team'}`}>{isAdmin ? 'Admin' : 'Team member'}</span>
-          <button type="button" onClick={onLogout}>Log out</button>
+          {isAdmin && <button type="button" onClick={onLogout}>Log out</button>}
         </div>
         <nav className="tabs">
           <button className={tab === 'assign' ? 'active' : ''} onClick={() => setTab('assign')}>Assign rooms</button>
@@ -358,6 +358,12 @@ function MainApp({ role, onLogout }) {
             </>
           )}
         </>
+      )}
+
+      {!isAdmin && (
+        <footer className="app-footer">
+          <button type="button" className="logout-btn" onClick={onLogout}>Log out</button>
+        </footer>
       )}
     </div>
   );
