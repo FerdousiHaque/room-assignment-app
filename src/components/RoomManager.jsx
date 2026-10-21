@@ -26,7 +26,7 @@ const emptyDraft = {
  * reserved for adding a new room and stays put; it's hidden while an
  * existing row is being edited.
  */
-export default function RoomManager({ rooms, desks, onChange }) {
+export default function RoomManager({ rooms, desks, onChange, readOnly = false }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [editingId, setEditingId] = useState(null);
   // Id of the room awaiting delete confirmation, or null when the confirm
@@ -308,13 +308,17 @@ export default function RoomManager({ rooms, desks, onChange }) {
                 <td>{r.hasWindow ? 'Window' : '—'}</td>
                 <td>{resolvedLabel(r)}</td>
                 <td className="row-actions">
+                  {!readOnly && (
+                  <>
                   <button type="button" onClick={() => (editingId === r.id ? resetDraft() : startEdit(r))}>
                     {editingId === r.id ? 'Close' : 'Edit'}
                   </button>
                   <button type="button" onClick={() => requestDelete(r.id)}>Delete</button>
+                  </>
+                  )}
                 </td>
               </tr>
-              {editingId === r.id && (
+              {!readOnly && editingId === r.id && (
                 <tr className="inline-edit-row" ref={editRowRef}>
                   <td colSpan={columnCount}>
                     <div className="provider-form inline">
@@ -333,7 +337,7 @@ export default function RoomManager({ rooms, desks, onChange }) {
         </tbody>
       </table>
 
-      {editingId === null && (
+      {!readOnly && editingId === null && (
         <div className="provider-form">
           <h3>Add room</h3>
           {renderFormFields()}

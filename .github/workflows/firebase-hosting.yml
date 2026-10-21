@@ -37,6 +37,10 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          # Fixed admin login (see README "Admin login & team member access").
+          VITE_ADMIN_USERNAME: ${{ secrets.ADMIN_USERNAME }}
+          VITE_ADMIN_PASSWORD_SHA256: ${{ secrets.ADMIN_PASSWORD_SHA256 }}
 
       - name: Deploy preview (pull requests)
         if: github.event_name == 'pull_request'

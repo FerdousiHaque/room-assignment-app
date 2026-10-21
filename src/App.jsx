@@ -9,6 +9,8 @@ import UploadFlow from './components/UploadFlow.jsx';
 import ProviderManager from './components/ProviderManager.jsx';
 import RoomManager from './components/RoomManager.jsx';
 import ProviderSummaryTable from './components/ProviderSummaryTable.jsx';
+import LoginPage from './components/LoginPage.jsx';
+import { loadRole, saveRole } from './auth/auth.js';
 import {
   subscribeProviders,
   subscribeRooms,
@@ -60,7 +62,8 @@ function previousDayIso(dateStr) {
   return d.toISOString().slice(0, 10);
 }
 
-export default function App() {
+function MainApp({ role, onLogout }) {
+  const isAdmin = role === 'admin';
   const [tab, setTab] = useState('assign'); // 'assign' | 'providers' | 'rooms'
   const [providers, setProvidersLocal] = useState(seedProviders);
   const [rooms, setRoomsLocal] = useState(seedRooms);
@@ -303,6 +306,10 @@ export default function App() {
             Couldn't save the last change to the shared database — it's only on this screen right now. Check your connection and try again.
           </p>
         )}
+        <div className="header-user">
+          <span className={`role-badge ${isAdmin ? '' : 'team'}`}>{isAdmin ? 'Admin' : 'Team member'}</span>
+          <button type="button" onClick={onLogout}>Log out</button>
+        </div>
         <nav className="tabs">
           <button className={tab === 'assign' ? 'active' : ''} onClick={() => setTab('assign')}>Assign rooms</button>
           <button className={tab === 'providers' ? 'active' : ''} onClick={() => setTab('providers')}>Providers</button>
@@ -312,11 +319,11 @@ export default function App() {
       </header>
 
       {tab === 'providers' && (
-        <ProviderManager providers={providers} desks={desks} rooms={rooms} onChange={setProviders} />
+        <ProviderManager providers={providers} desks={desks} rooms={rooms} onChange={setProviders} readOnly={!isAdmin} />
       )}
 
       {tab === 'rooms' && (
-        <RoomManager rooms={rooms} desks={desks} onChange={setRooms} />
+        <RoomManager rooms={rooms} desks={desks} onChange={setRooms} readOnly={!isAdmin} />
       )}
 
       {/* {tab === 'blocks' && (
@@ -354,4 +361,12 @@ export default function App() {
       )}
     </div>
   );
+}
+
+export default function App() {
+  const [role, setRole] = useState(loadRole);
+  const login = (r) => { saveRole(r); setRole(r); };
+  const logout = () => { saveRole(null); setRole(null); };
+  if (!role) return <LoginPage onLogin={login} />;
+  return <MainApp role={role} onLogout={logout} />;
 }

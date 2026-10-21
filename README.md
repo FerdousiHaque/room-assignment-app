@@ -437,3 +437,36 @@ GitHub Actions (`.github/workflows/firebase-hosting-merge.yml`) builds and
 deploys automatically on push to `main`. Repo secrets required:
 `FIREBASE_SERVICE_ACCOUNT` (Hosting deploy key) and the six
 `VITE_FIREBASE_*` values from `.env`.
+
+
+## Admin login & team member access
+
+The app opens on a login page (cartoon kidney artwork, "Nephrology & Hypertension") with two buttons:
+
+- **Admin Login** (blue) — username + password. Full access: assign rooms, import/export PDFs, and add / edit / delete on the Providers and Rooms pages.
+- **As a team member** (orange) — no password. Full access to the Assign rooms page (import + export PDFs) but the Providers and Rooms pages are **view only** (no Add / Edit / Delete).
+
+A **Log out** button in the header returns to the login page. The choice is remembered only for the browser tab (sessionStorage).
+
+### Setting the fixed admin username and password
+
+The username and the password's SHA-256 fingerprint (never the plain password) are read at build time from two GitHub repository secrets:
+
+1. Make the fingerprint of your password (any computer with Node): `npm run hash-password -- "YourChosenPassword"` — copy the long hex string it prints.
+2. GitHub repo → **Settings → Secrets and variables → Actions → New repository secret**, add:
+   - `ADMIN_USERNAME` = your username
+   - `ADMIN_PASSWORD_SHA256` = the hex string from step 1
+3. Re-run the latest "Deploy to Firebase Hosting" workflow (or push any commit). To change the login later, update the secrets and redeploy.
+
+For local development put the same two values in a `.env.local` file in the project root:
+
+```
+VITE_ADMIN_USERNAME=yourusername
+VITE_ADMIN_PASSWORD_SHA256=thehexstring
+```
+
+If either value is missing, the Admin Login button is disabled (team member still works). The code is in `src/auth/` and `src/components/LoginPage.jsx`.
+
+### Important: this is a front-end gate, not real security
+
+Everything in a web app is delivered to the browser, including the password fingerprint, and the Firestore rules (`firestore.rules`) still allow anyone with the site address to read and write the data directly. The login keeps casual users out of the admin screens, but it cannot stop a technical person. For real protection, add Firebase Authentication and tighten `firestore.rules` to `request.auth != null`.

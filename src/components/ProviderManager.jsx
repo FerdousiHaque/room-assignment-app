@@ -66,7 +66,7 @@ function byCodeAsc(a, b) {
  * the two can be open at a time), and comes back once the edit is saved or
  * cancelled.
  */
-export default function ProviderManager({ providers, desks, rooms, onChange }) {
+export default function ProviderManager({ providers, desks, rooms, onChange, readOnly = false }) {
   const [draft, setDraft] = useState(emptyDraft);
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState(null);
@@ -475,13 +475,17 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
                 <td>{p.fixedRoom ? 'Yes' : 'No'}</td>
                 <td>{p.type || 'Any'}</td>
                 <td className="row-actions">
+                  {!readOnly && (
+                  <>
                   <button type="button" onClick={() => (editingId === p.id ? resetDraft() : startEdit(p))}>
                     {editingId === p.id ? 'Close' : 'Edit'}
                   </button>
                   <button type="button" onClick={() => requestDelete(p.id)}>Delete</button>
+                  </>
+                  )}
                 </td>
               </tr>
-              {editingId === p.id && (
+              {!readOnly && editingId === p.id && (
                 <tr className="inline-edit-row" ref={editRowRef}>
                   <td colSpan={columnCount}>
                     <div className="provider-form inline">
@@ -501,7 +505,7 @@ export default function ProviderManager({ providers, desks, rooms, onChange }) {
         </tbody>
       </table>
 
-      {editingId === null && (
+      {!readOnly && editingId === null && (
         <div className="provider-form">
           <h3>Add provider</h3>
           {renderFormFields()}
