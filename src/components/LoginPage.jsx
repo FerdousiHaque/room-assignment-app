@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { checkAdminCredentials, isAdminConfigured } from '../auth/auth.js';
+import { loginAdmin, loginTeam, friendlyAuthError } from '../auth/auth.js';
 
 // Original cartoon artwork (a friendly kidney pair with a blood-pressure
 // gauge) — deliberately NOT any organization's logo or shield.
@@ -31,22 +31,34 @@ function KidneyCartoon() {
   );
 }
 
-export default function LoginPage({ onLogin }) {
+export default function LoginPage() {
   const [showForm, setShowForm] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const configured = isAdminConfigured();
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
     setError('');
-    const ok = await checkAdminCredentials(username, password);
-    setBusy(false);
-    if (ok) onLogin('admin');
-    else setError('Incorrect username or password.');
+    try {
+      await loginAdmin(username, password); // App switches screens when Firebase reports the sign-in
+    } catch (err) {
+      setError(friendlyAuthError(err));
+      setBusy(false);
+    }
+  };
+
+  const goTeam = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await loginTeam();
+    } catch (err) {
+      setError(friendlyAuthError(err));
+      setBusy(false);
+    }
   };
 
   return (
@@ -60,8 +72,8 @@ export default function LoginPage({ onLogin }) {
         {showForm ? (
           <form className="login-form" onSubmit={submit}>
             <label>
-              Username
-              <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
+              Email
+              <input type="email" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
             </label>
             <label>
               Password
@@ -77,13 +89,13 @@ export default function LoginPage({ onLogin }) {
           </form>
         ) : (
           <div className="login-buttons">
-            <button type="button" className="login-btn login-btn-admin" onClick={() => setShowForm(true)} disabled={!configured}>
+            <button type="button" className="login-btn login-btn-admin" onClick={() => setShowForm(true)} disabled={busy}>
               Admin Login
             </button>
-            <button type="button" className="login-btn login-btn-team" onClick={() => onLogin('team')}>
+            <button type="button" className="login-btn login-btn-team" onClick={goTeam} disabled={busy}>
               As a team member
             </button>
-            {!configured && <p className="login-note">Admin login isn't set up yet — see the README.</p>}
+            {error && <p className="login-error">{error}</p>}
           </div>
         )}
       </div>
