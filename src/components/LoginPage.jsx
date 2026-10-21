@@ -70,7 +70,7 @@ export default function LoginPage() {
 
         <form className="login-form" onSubmit={submit}>
           <label>
-            Username or email
+            User Name
             <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
           </label>
           <label>
