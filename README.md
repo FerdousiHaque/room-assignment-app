@@ -443,7 +443,7 @@ deploys automatically on push to `main`. Repo secrets required:
 
 The app opens on a login page with two buttons:
 
-- **Admin Login** — Firebase email + password. Full access: assign rooms, import/export PDFs, and add / edit / delete on Providers and Rooms.
+- **Admin Login** — a fixed username + password (stored in Firebase Authentication). Full access: assign rooms, import/export PDFs, and add / edit / delete on Providers and Rooms.
 - **As a team member** — no password (Firebase anonymous sign-in). Full access to Assign rooms (import + export PDFs); Providers and Rooms are **view only**.
 
 The buttons only change what the screens show. What is actually **enforced** is `firestore.rules`: you must be signed in to read; only an admin can write providers/rooms; team members can only write the daily upload documents (`appState/day-*`).
@@ -452,9 +452,9 @@ The buttons only change what the screens show. What is actually **enforced** is 
 
 1. Firebase console → project **room-assingment** → **Build → Authentication → Get started**.
 2. **Sign-in method** tab: enable **Email/Password** and **Anonymous**.
-3. **Users** tab → **Add user**: enter the admin email and password (this is the fixed admin login; change the password there any time, or use "Reset password").
-4. Open **Settings → User actions** and turn **off** "Enable create (sign-up)" so nobody can register their own email/password account.
-5. In `firestore.rules`, replace `REPLACE_WITH_ADMIN_EMAIL` in `isAdmin()` with that same email (several are allowed: `['a@x.org', 'b@x.org']`).
+3. **Users** tab → **Add user**: Email = `YOURUSERNAME@roomassign.app` (e.g. `admin@roomassign.app`), Password = your chosen password. The `@roomassign.app` part is only a label Firebase requires — nobody types it and no email is ever sent. On the login page you type just `YOURUSERNAME`.
+4. Open **Settings → User actions** and turn **off** "Enable create (sign-up)" so nobody can register their own account.
+5. In `firestore.rules`, replace `REPLACE_WITH_USERNAME@roomassign.app` in `isAdmin()` with the same address (several admins allowed: `['a@roomassign.app', 'b@roomassign.app']`).
 6. Push to `main`. The workflow deploys the site and the rules.
 
-Notes: the login lasts for the browser tab only. "As a team member" has no password by design, so anyone who has the site address can open it as a team member — if that's too open, ask for a shared team passcode or Google sign-in restricted to your organization.
+Notes: to change the admin password, edit the user in the console (Authentication → Users → ⋮ → Reset/Change password; e-mailed reset links don't work for these made-up addresses). The login lasts for the browser tab only. "As a team member" has no password by design, so anyone who has the site address can open it as a team member — if that's too open, ask for a shared team passcode or Google sign-in restricted to your organization.

@@ -72,8 +72,8 @@ export default function LoginPage() {
         {showForm ? (
           <form className="login-form" onSubmit={submit}>
             <label>
-              Email
-              <input type="email" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
+              Username
+              <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
             </label>
             <label>
               Password

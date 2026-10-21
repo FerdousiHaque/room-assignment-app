@@ -15,15 +15,25 @@ import { auth } from '../firebase.js';
 // The login lasts for the browser tab only (shared-computer friendly).
 const ready = setPersistence(auth, browserSessionPersistence).catch(() => {});
 
+// Firebase Authentication identifies password accounts by email, but the
+// admin wants a plain username. The username is turned into a behind-the-
+// scenes email ("<username>@roomassign.app") — never shown, never mailed.
+// The Firebase console user and firestore.rules use that same address.
+export const USERNAME_EMAIL_DOMAIN = 'roomassign.app';
+export const usernameToEmail = (username) => {
+  const u = String(username || '').trim().toLowerCase();
+  return u.includes('@') ? u : `${u}@${USERNAME_EMAIL_DOMAIN}`;
+};
+
 export const roleOf = (user) => (!user ? null : user.isAnonymous ? 'team' : 'admin');
 
 export function subscribeAuth(callback) {
   return onAuthStateChanged(auth, (user) => callback(user, roleOf(user)));
 }
 
-export async function loginAdmin(email, password) {
+export async function loginAdmin(username, password) {
   await ready;
-  await signInWithEmailAndPassword(auth, email.trim(), password);
+  await signInWithEmailAndPassword(auth, usernameToEmail(username), password);
 }
 
 export async function loginTeam() {
@@ -39,7 +49,7 @@ export function friendlyAuthError(err) {
     case 'auth/wrong-password':
     case 'auth/user-not-found':
     case 'auth/invalid-email':
-      return 'Incorrect email or password.';
+      return 'Incorrect username or password.';
     case 'auth/too-many-requests':
       return 'Too many attempts. Wait a few minutes and try again.';
     case 'auth/operation-not-allowed':
