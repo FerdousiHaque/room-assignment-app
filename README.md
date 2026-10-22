@@ -453,7 +453,7 @@ The buttons only change what the screens show. What is actually **enforced** is 
 1. Firebase console → project **room-assingment** → **Build → Authentication → Get started**.
 2. **Sign-in method** tab: enable **Email/Password** and **Anonymous**.
 3. **Users** tab → **Add user**: Email = `YOURUSERNAME@roomassign.app` (e.g. `admin@roomassign.app`), Password = your chosen password. The `@roomassign.app` part is only a label Firebase requires — nobody types it and no email is ever sent. On the login page you type just `YOURUSERNAME`.
-4. Open **Settings → User actions** and turn **off** "Enable create (sign-up)" so nobody can register their own account.
+4. Leave **Settings → User actions → "Enable create (sign-up)" ON**. Turning it off also blocks the anonymous "As a team member" sign-in. Self-registered accounts cannot change providers or rooms because `firestore.rules` only accepts the admin address.
 5. In `firestore.rules`, replace `REPLACE_WITH_USERNAME@roomassign.app` in `isAdmin()` with the same address (several admins allowed: `['a@roomassign.app', 'b@roomassign.app']`).
 6. Push to `main`. The workflow deploys the site and the rules.
 

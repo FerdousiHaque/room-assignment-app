@@ -54,9 +54,12 @@ export function friendlyAuthError(err) {
       return 'Too many attempts. Wait a few minutes and try again.';
     case 'auth/operation-not-allowed':
       return 'This sign-in method is not enabled in Firebase yet (Authentication → Sign-in method).';
+    case 'auth/admin-restricted-operation':
+      return 'Team-member sign-in is blocked: in Firebase → Authentication → Settings → User actions, turn "Enable create (sign-up)" back ON.';
     case 'auth/network-request-failed':
       return 'Network problem — check your connection.';
     default:
-      return 'Could not sign in. Please try again.';
+      console.error('Sign-in failed:', err);
+      return `Could not sign in (${err?.code || 'unknown error'}). Please try again.`;
   }
 }
