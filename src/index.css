@@ -762,10 +762,16 @@ tr.inline-edit-row {
 
 /* Team-member log out: bottom centre, full width on phones */
 .app-footer { display: flex; justify-content: center; margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--line); }
-.logout-btn { font-family: inherit; font-size: 15px; font-weight: 600; min-width: 200px; height: 44px; padding: 0 24px; border: 1px solid #b1560c; background: #fff; color: #b1560c; border-radius: 10px; cursor: pointer; }
-.logout-btn:hover { background: #fdebdc; }
+.logout-btn { font-family: inherit; font-size: 15px; font-weight: 600; min-width: 200px; height: 44px; padding: 0 24px; border: 1px solid #0a3d8f; background: #fff; color: #0a3d8f; border-radius: 10px; cursor: pointer; }
+.logout-btn:hover { background: #e6eefb; }
 @media (max-width: 600px) {
   .logout-btn { width: 100%; min-width: 0; }
   .login-card { padding: 24px 18px 20px; }
   .login-title { font-size: 22px; }
+}
+
+.app-header { gap: 16px; }
+.app-header .role-badge { align-self: center; white-space: nowrap; }
+@media (max-width: 700px) {
+  .app-header { flex-wrap: wrap; }
 }

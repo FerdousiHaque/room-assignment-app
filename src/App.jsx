@@ -300,16 +300,13 @@ function MainApp({ role, onLogout }) {
   return (
     <div className="app">
       <header className="app-header">
+        <span className={`role-badge ${isAdmin ? '' : 'team'}`}>{isAdmin ? 'Admin' : 'Team member'}</span>
         <h1>Room Assignments</h1>
         {firestoreStatus === 'error' && (
           <p className="firestore-status firestore-status-error">
             Couldn't save the last change to the shared database — it's only on this screen right now. Check your connection and try again.
           </p>
         )}
-        <div className="header-user">
-          <span className={`role-badge ${isAdmin ? '' : 'team'}`}>{isAdmin ? 'Admin' : 'Team member'}</span>
-          {isAdmin && <button type="button" onClick={onLogout}>Log out</button>}
-        </div>
         <nav className="tabs">
           <button className={tab === 'assign' ? 'active' : ''} onClick={() => setTab('assign')}>Assign rooms</button>
           <button className={tab === 'providers' ? 'active' : ''} onClick={() => setTab('providers')}>Providers</button>
@@ -360,11 +357,9 @@ function MainApp({ role, onLogout }) {
         </>
       )}
 
-      {!isAdmin && (
-        <footer className="app-footer">
-          <button type="button" className="logout-btn" onClick={onLogout}>Log out</button>
-        </footer>
-      )}
+      <footer className="app-footer">
+        <button type="button" className="logout-btn" onClick={onLogout}>Log out</button>
+      </footer>
     </div>
   );
 }
