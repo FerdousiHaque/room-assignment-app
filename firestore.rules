@@ -9,8 +9,7 @@ rules_version = '2';
 //     (appState/day-YYYY-MM-DD) — they can import/export but can never
 //     change providers or rooms.
 //
-// >>> In isAdmin() replace REPLACE_WITH_USERNAME with your admin username
-// (keep the @roomassign.app part — see src/auth/auth.js). <<<
+// Admin account: RSTNEPDESK (signs in as rstnepdesk@roomassign.app; see src/auth/auth.js).
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() {
@@ -19,7 +18,7 @@ service cloud.firestore {
     function isAdmin() {
       return signedIn()
         && request.auth.token.firebase.sign_in_provider == 'password'
-        && request.auth.token.email in ['REPLACE_WITH_USERNAME@roomassign.app'];
+        && request.auth.token.email in ['rstnepdesk@roomassign.app'];
     }
 
     match /appState/{docId} {
