@@ -1,23 +1,29 @@
 rules_version = '2';
 
-// This app currently has no sign-in step (see README) — it's meant to be
-// used by department staff who have the link, not the public internet.
-// Firestore rules can't check "is this person on our team" without an
-// auth system in front of them, so for now this scopes access to the
-// one collection the app actually uses (`appState`) and blocks
-// everything else in the project outright. This is NOT equivalent to
-// real per-user access control — anyone with the app's URL (and
-// therefore its Firebase config, which is always public in a web app)
-// can read and write `appState`.
+// Access model (Firebase Authentication):
+//   * Everyone must be signed in to read anything (admin, or a team member
+//     who used "As a team member" = anonymous sign-in).
+//   * ADMIN = an email/password account whose email is listed in
+//     isAdmin() below. Admins can write everything (providers, rooms, days).
+//   * TEAM MEMBERS (anonymous) can only write the daily upload documents
+//     (appState/day-YYYY-MM-DD) — they can import/export but can never
+//     change providers or rooms.
 //
-// To lock this down for real: add Firebase Authentication (e.g. Google
-// sign-in restricted to your clinic's email domain) and change the
-// `allow read, write` line below to `allow read, write: if request.auth != null
-//   && request.auth.token.email.matches('.*@yourdomain[.]org$');`
+// Admin account: RSTNEPDESK (signs in as rstnepdesk@roomassign.app; see src/auth/auth.js).
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'password'
+        && request.auth.token.email in ['rstnepdesk@roomassign.app'];
+    }
+
     match /appState/{docId} {
-      allow read, write: if true;
+      allow read: if signedIn();
+      allow write: if isAdmin() || (signedIn() && docId.matches('day-.*'));
     }
     match /{document=**} {
       allow read, write: if false;

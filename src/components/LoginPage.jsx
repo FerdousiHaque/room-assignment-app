@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { checkAdminCredentials, isAdminConfigured } from '../auth/auth.js';
+import { loginAdmin, loginTeam, friendlyAuthError } from '../auth/auth.js';
 
 // Original cartoon artwork (a friendly kidney pair with a blood-pressure
 // gauge) — deliberately NOT any organization's logo or shield.
@@ -31,22 +31,33 @@ function KidneyCartoon() {
   );
 }
 
-export default function LoginPage({ onLogin }) {
-  const [showForm, setShowForm] = useState(false);
+export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const configured = isAdminConfigured();
 
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
     setError('');
-    const ok = await checkAdminCredentials(username, password);
-    setBusy(false);
-    if (ok) onLogin('admin');
-    else setError('Incorrect username or password.');
+    try {
+      await loginAdmin(username, password); // App switches screens when Firebase reports the sign-in
+    } catch (err) {
+      setError(friendlyAuthError(err));
+      setBusy(false);
+    }
+  };
+
+  const goTeam = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await loginTeam();
+    } catch (err) {
+      setError(friendlyAuthError(err));
+      setBusy(false);
+    }
   };
 
   return (
@@ -57,35 +68,23 @@ export default function LoginPage({ onLogin }) {
         <h1 className="login-title">Nephrology &amp; Hypertension</h1>
         <p className="login-sub">Daily Room Assignments</p>
 
-        {showForm ? (
-          <form className="login-form" onSubmit={submit}>
-            <label>
-              Username
-              <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus />
-            </label>
-            <label>
-              Password
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
-            </label>
-            {error && <p className="login-error">{error}</p>}
-            <button type="submit" className="login-btn login-btn-admin" disabled={busy}>
-              {busy ? 'Checking…' : 'Login'}
-            </button>
-            <button type="button" className="login-link" onClick={() => { setShowForm(false); setError(''); }}>
-              Back
-            </button>
-          </form>
-        ) : (
-          <div className="login-buttons">
-            <button type="button" className="login-btn login-btn-admin" onClick={() => setShowForm(true)} disabled={!configured}>
-              Admin Login
-            </button>
-            <button type="button" className="login-btn login-btn-team" onClick={() => onLogin('team')}>
-              As a team member
-            </button>
-            {!configured && <p className="login-note">Admin login isn't set up yet — see the README.</p>}
-          </div>
-        )}
+        <form className="login-form" onSubmit={submit}>
+          <label>
+            User Name
+            <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
+          </label>
+          <label>
+            Password
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+          </label>
+          {error && <p className="login-error">{error}</p>}
+          <button type="submit" className="login-btn login-btn-admin" disabled={busy || !username.trim() || !password}>
+            {busy ? 'Checking…' : 'Admin Login'}
+          </button>
+          <button type="button" className="login-btn login-btn-team" onClick={goTeam} disabled={busy}>
+            As a team member
+          </button>
+        </form>
       </div>
     </div>
   );

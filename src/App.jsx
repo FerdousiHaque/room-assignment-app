@@ -10,7 +10,7 @@ import ProviderManager from './components/ProviderManager.jsx';
 import RoomManager from './components/RoomManager.jsx';
 import ProviderSummaryTable from './components/ProviderSummaryTable.jsx';
 import LoginPage from './components/LoginPage.jsx';
-import { loadRole, saveRole } from './auth/auth.js';
+import { subscribeAuth, logout } from './auth/auth.js';
 import {
   subscribeProviders,
   subscribeRooms,
@@ -308,7 +308,7 @@ function MainApp({ role, onLogout }) {
         )}
         <div className="header-user">
           <span className={`role-badge ${isAdmin ? '' : 'team'}`}>{isAdmin ? 'Admin' : 'Team member'}</span>
-          <button type="button" onClick={onLogout}>Log out</button>
+          {isAdmin && <button type="button" onClick={onLogout}>Log out</button>}
         </div>
         <nav className="tabs">
           <button className={tab === 'assign' ? 'active' : ''} onClick={() => setTab('assign')}>Assign rooms</button>
@@ -359,14 +359,28 @@ function MainApp({ role, onLogout }) {
           )}
         </>
       )}
+
+      {!isAdmin && (
+        <footer className="app-footer">
+          <button type="button" className="logout-btn" onClick={onLogout}>Log out</button>
+        </footer>
+      )}
     </div>
   );
 }
 
 export default function App() {
-  const [role, setRole] = useState(loadRole);
-  const login = (r) => { saveRole(r); setRole(r); };
-  const logout = () => { saveRole(null); setRole(null); };
-  if (!role) return <LoginPage onLogin={login} />;
+  const [role, setRole] = useState(null);
+  const [authReady, setAuthReady] = useState(false);
+  useEffect(
+    () =>
+      subscribeAuth((_user, r) => {
+        setRole(r);
+        setAuthReady(true);
+      }),
+    []
+  );
+  if (!authReady) return <div className="login-wrap"><p style={{ color: '#fff' }}>Loading…</p></div>;
+  if (!role) return <LoginPage />;
   return <MainApp role={role} onLogout={logout} />;
 }
