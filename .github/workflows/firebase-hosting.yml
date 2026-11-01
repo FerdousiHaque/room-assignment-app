@@ -35,6 +35,11 @@ jobs:
       - name: Install dependencies
         run: npm install
 
+      # A failing test stops the workflow here, before anything is built or
+      # deployed (site or Firestore rules).
+      - name: Run tests
+        run: npm test
+
       - name: Build
         run: npm run build
 

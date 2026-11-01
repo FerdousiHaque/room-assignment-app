@@ -1,5 +1,5 @@
 /**
- * Room Assignment Engine (v3 — preferences, blocks, video, never-drop)
+ * Room Assignment Engine (v3 — preferences, video, never-drop)
  * ------------------------------------------------------------------
  * Pure functions — no Firebase/PDF calls in here.
  *
@@ -15,9 +15,7 @@
  * 7. A room has two half-day slots (AM/PM); a provider whose day is
  *    entirely morning or entirely afternoon shares a room with a
  *    complementary provider; a full-day provider takes the whole room.
- * 8. NEW — Room blocks: a room-session (AM/PM, for a given date) that's
- *    covered by a block is treated as already occupied and is never
- *    assigned, checked before any placement is attempted.
+ * 8. (Room blocks were removed; the number is kept so later rules still match.)
  * 9. Video-capable rooms: whether a video-capable room is needed is decided
  *    ENTIRELY by that day's imported schedule (dayEntries[].hasVideoVisit) —
  *    there is no static per-provider "has video visit" flag. If a provider
@@ -60,8 +58,8 @@
  *    room(s) are reserved up front, before anything else is assigned, from
  *    their primaryPreferredRoomId (slot 0) and secondPreferredRoomId (slot
  *    1, if preferredNumberOfRooms is 2) — no scoring, no substitution. If a
- *    fixed room isn't set or isn't available that session (blocked or
- *    already reserved by another fixed-room provider), that slot shows
+ *    fixed room isn't set or isn't available that session (already reserved by
+ *    another fixed-room provider), that slot shows
  *    "Not Found"; it is NEVER filled by a different room and NEVER sent
  *    through overflow to another desk. This reservation happens before
  *    any non-fixed provider is placed, so a fixed-room provider's room
@@ -324,13 +322,8 @@
  * ------------------------------------------------------------------
  */
 
-const NOON = 12 * 60;
 // Rule #26 — two in-person visits at least this far apart share one room.
 const MIN_GAP_FOR_ONE_ROOM_MINUTES = 120;
-
-function timeRangeOverlaps(aStart, aEnd, bStart, bEnd) {
-  return aStart < bEnd && bStart < aEnd;
-}
 
 // "22E" -> { num: 22, suffix: "E" }; null if unparseable.
 function parseRoomCode(code) {
@@ -393,36 +386,6 @@ function computeEffectiveRoomsNeeded(provider, entry) {
 }
 
 /**
- * Computes, for the given date, which rooms have their AM and/or PM slot
- * blocked. Blocks with no `date` are treated as standing/recurring
- * (apply every day). Blocks with no start/end time block the whole day.
- *
- * @param {Array} roomBlocks [{ id, roomId, date: string|null, startMinutes: number|null, endMinutes: number|null }]
- *                            (startMinutes/endMinutes already parsed to minutes-since-midnight upstream)
- */
-export function computeBlockedSlots(roomBlocks, date) {
-  const blocked = {}; // roomId -> { am: bool, pm: bool }
-  for (const block of roomBlocks || []) {
-    if (block.date && block.date !== date) continue;
-    if (!blocked[block.roomId]) blocked[block.roomId] = { am: false, pm: false, reason: null };
-    if (block.reason && !blocked[block.roomId].reason) blocked[block.roomId].reason = block.reason;
-
-    const hasStart = block.startMinutes !== null && block.startMinutes !== undefined;
-    const hasEnd = block.endMinutes !== null && block.endMinutes !== undefined;
-    if (!hasStart && !hasEnd) {
-      blocked[block.roomId].am = true;
-      blocked[block.roomId].pm = true;
-      continue;
-    }
-    const start = hasStart ? block.startMinutes : 0;
-    const end = hasEnd ? block.endMinutes : 24 * 60;
-    if (timeRangeOverlaps(start, end, 0, NOON)) blocked[block.roomId].am = true;
-    if (timeRangeOverlaps(start, end, NOON, 24 * 60)) blocked[block.roomId].pm = true;
-  }
-  return blocked;
-}
-
-/**
  * @param {Array} desks       [{ id, name }]
  * @param {Array} rooms       [{ id, deskId, code, hasWindow, videoCapable }]
  * @param {Array} providers   [{ id, name, homeDeskId, preferredNumberOfRooms,
@@ -446,11 +409,10 @@ export function computeBlockedSlots(roomBlocks, date) {
  *                             back to provider.preferredNumberOfRooms as-is).
  *                             soloTime is the one raw imported Time value for a provider with
  *                             exactly one patient that day, or null/omitted otherwise.
- * @param {Array} roomBlocks  [{ id, roomId, date, startMinutes, endMinutes, reason }]
- * @param {string} date       'YYYY-MM-DD', used to resolve which blocks apply today
+ * @param {string} date       'YYYY-MM-DD'
  * @returns {{ assignments: Array, warnings: Array, logs: Array }}
  */
-export function generateDailyAssignments({ desks, rooms, providers, dayEntries, roomBlocks = [], date }) {
+export function generateDailyAssignments({ desks, rooms, providers, dayEntries, date }) {
   const warnings = [];
   // Real, human-readable narration of what the engine actually did, in the
   // order it happened — see rule #18's doc comment and the UI's Logs box
@@ -467,7 +429,6 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     logs.push(`Working on ${desk.name} providers…`);
   };
   const providerById = Object.fromEntries(providers.map((p) => [p.id, p]));
-  const blockedSlots = computeBlockedSlots(roomBlocks, date);
 
   // Only 'exam' rooms (or rooms with no `kind` set, for backward
   // compatibility with older seed/Firestore data) ever enter the
@@ -511,15 +472,7 @@ export function generateDailyAssignments({ desks, rooms, providers, dayEntries, 
     return String(room.code || '').trim().startsWith('6');
   };
 
-  const isBlocked = (roomId, session) => {
-    const b = blockedSlots[roomId];
-    if (!b) return false;
-    if (session === 'FULL') return b.am || b.pm;
-    return session === 'AM' ? b.am : b.pm;
-  };
-
   const canFit = (roomId, session) => {
-    if (isBlocked(roomId, session)) return false;
     const s = roomState[roomId];
     if (session === 'FULL') return s.amOccupant === null && s.pmOccupant === null;
     return session === 'AM' ? s.amOccupant === null : s.pmOccupant === null;

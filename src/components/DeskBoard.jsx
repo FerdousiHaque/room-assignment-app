@@ -23,7 +23,7 @@ function buildOccupancy(desk, assignments) {
   return byRoom;
 }
 
-export default function DeskBoard({ desk, rooms, assignments, blockedRoomIds = {}, onDownload }) {
+export default function DeskBoard({ desk, rooms, assignments, onDownload }) {
   const occupancy = buildOccupancy(desk, assignments);
   const usedCount = Object.keys(occupancy).length;
   const sortedRooms = [...rooms].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
@@ -38,7 +38,6 @@ export default function DeskBoard({ desk, rooms, assignments, blockedRoomIds = {
       <ul className="room-list">
         {sortedRooms.map((room) => {
           const occ = occupancy[room.id] || { am: null, pm: null };
-          const blocked = blockedRoomIds[room.id];
           const isFullDay = occ.am && occ.pm && occ.am.session === 'FULL';
 
           return (
@@ -47,11 +46,7 @@ export default function DeskBoard({ desk, rooms, assignments, blockedRoomIds = {
               {room.hasWindow && <span className="window-tag">Window</span>}
               {room.videoCapable && <span className="video-tag">Video</span>}
 
-              {blocked?.am || blocked?.pm ? (
-                <span className="room-provider blocked-label">
-                  Blocked{blocked.reason ? ` — ${blocked.reason}` : ''}
-                </span>
-              ) : isFullDay ? (
+              {isFullDay ? (
                 <span className={`room-provider ${occ.am.isOverflow ? 'overflow' : ''}`}>
                   {occ.am.providerName}
                   {occ.am.isOverflow && <em> (overflow)</em>}

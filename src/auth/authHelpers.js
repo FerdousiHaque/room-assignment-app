@@ -3,7 +3,7 @@
 // admin wants a plain username. The username is turned into a behind-the-
 // scenes email ("<username>@roomassign.app") — never shown, never mailed.
 // The Firebase console user and firestore.rules use that same address.
-export const USERNAME_EMAIL_DOMAIN = 'roomassign.app';
+const USERNAME_EMAIL_DOMAIN = 'roomassign.app';
 export const usernameToEmail = (username) => {
   const u = String(username || '').trim().toLowerCase();
   return u.includes('@') ? u : `${u}@${USERNAME_EMAIL_DOMAIN}`;

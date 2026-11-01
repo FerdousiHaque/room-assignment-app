@@ -17,10 +17,6 @@
  * A desk with no hall/row/side configured on its rooms falls back to a
  * plain one-column room list (drawSimpleRoomList) — same idea, just without
  * the two-column floor-plan layout.
- *
- * generateAssignmentPdf / downloadAssignmentPdf (the original combined,
- * all-desks-in-one-file version) are kept below for reference/reuse — nothing
- * currently calls them, since the app now downloads per desk.
  */
 import { jsPDF } from 'jspdf';
 
@@ -32,20 +28,20 @@ const PAGE_RIGHT = 564; // right edge of content, matching the existing marginX=
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 /** 'YYYY-MM-DD' -> '25Sep2026' (day, 3-letter month, year — no separators). */
-export function formatDateForFilename(dateStr) {
+function formatDateForFilename(dateStr) {
   const [y, m, d] = dateStr.split('-').map((s) => parseInt(s, 10));
   const dd = String(d).padStart(2, '0');
   return `${dd}${MONTH_ABBR[m - 1]}${y}`;
 }
 
 /** 'Desk West' -> 'DeskWest' (spaces stripped, matches the requested filename shape). */
-export function deskNameForFilename(deskName) {
+function deskNameForFilename(deskName) {
   return deskName.replace(/\s+/g, '');
 }
 
 // ---------- Per-desk export (current default) ----------
 
-export function generateDeskAssignmentPdf({ desk, date, rooms, assignments, providers = [] }) {
+function generateDeskAssignmentPdf({ desk, date, rooms, assignments, providers = [] }) {
   const doc = new jsPDF({ unit: 'pt', format: 'letter' });
   const marginX = 48;
   const providerById = Object.fromEntries(providers.map((p) => [p.id, p]));
@@ -153,39 +149,6 @@ export function downloadDeskAssignmentPdf({ desk, date, rooms, assignments, prov
   const doc = generateDeskAssignmentPdf({ desk, date, rooms, assignments, providers });
   const fileName = `${deskNameForFilename(desk.name)}_${formatDateForFilename(date)}.pdf`;
   doc.save(fileName);
-}
-
-// ---------- Combined all-desks export (kept for reference; unused by the UI) ----------
-
-export function generateAssignmentPdf({ date, desks, rooms, assignments, providers = [] }) {
-  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-  const marginX = 48;
-  const roomById = Object.fromEntries(rooms.map((r) => [r.id, r]));
-  const deskById = Object.fromEntries(desks.map((d) => [d.id, d]));
-  const providerById = Object.fromEntries(providers.map((p) => [p.id, p]));
-
-  drawProviderSummaryPage(doc, {
-    title: 'Provider Assignment Report',
-    date,
-    assignments,
-    roomById,
-    providerById,
-    marginX,
-    showDeskColumn: true,
-    deskById
-  });
-
-  desks.forEach((desk) => {
-    doc.addPage();
-    drawFloorMapPage(doc, { desk, rooms, marginX });
-  });
-
-  return doc;
-}
-
-export function downloadAssignmentPdf(args) {
-  const doc = generateAssignmentPdf(args);
-  doc.save(`room-assignments-${args.date}.pdf`);
 }
 
 // ---------- Shared drawing helpers ----------

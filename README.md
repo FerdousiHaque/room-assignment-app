@@ -16,7 +16,6 @@ src/
 │   ├── DeskBoard.jsx            # Per-desk room grid (AM/PM), per-desk PDF download
 │   ├── ProviderManager.jsx      # Provider CRUD table, inline edit, sort, delete confirm
 │   ├── RoomManager.jsx          # Room CRUD table, inline edit, sort, delete confirm
-│   ├── RoomBlockManager.jsx     # Room blocks — disabled in UI, code intact (see below)
 │   ├── ConfirmDialog.jsx        # Shared yes/no confirm popup (used by delete actions)
 │   └── WarningList.jsx          # Surfaces unresolved overflow/video/capacity warnings
 ├── logic/
@@ -45,15 +44,13 @@ Runs in this order for a given date:
    video visits; telephone-visit rows are dropped entirely upstream (never
    counted in `patientCount` either, never left in `unmatched`) — this
    matches the existing OCR parser's telephone handling.
-1. **Blocked slots** — `computeBlockedSlots` marks any room-session (AM/PM)
-   covered by a room block as unavailable before anything else runs.
-2. **Fixed-room reservation** — a provider with `fixedRoom: true` and at
+1. **Fixed-room reservation** — a provider with `fixedRoom: true` and at
    least one patient that day gets their primary/second preferred room
    reserved up front, no scoring, no substitution, no overflow. Unavailable
    → "Not Found" for that slot; never moved elsewhere.
-3. **Priority tiers** — `Doctor → Fellow → Any → Nurse`. Each tier is fully
+2. **Priority tiers** — `Doctor → Fellow → Any → Nurse`. Each tier is fully
    placed (home desk, then its own overflow) before the next tier starts.
-4. **Per-slot room filling** (`fillMissingSlots`), tried in this order for
+3. **Per-slot room filling** (`fillMissingSlots`), tried in this order for
    whichever slots are still missing:
    1. Each missing slot's own named preference — `primaryPreferredRoomId`
       for slot 0, `secondPreferredRoomId` for slot 1 — a hard check (must be
@@ -104,7 +101,7 @@ Runs in this order for a given date:
       `alternateRoomCodes` match left over from steps 2/2b (usually inert
       by this point, since those steps already claimed any match that was
       actually open).
-5. **Overflow** — only attempted when the home desk placed **zero** of a
+4. **Overflow** — only attempted when the home desk placed **zero** of a
    provider's needed rooms (a partial home-desk placement is never topped
    up elsewhere) during this pass. Tries each `alternateDeskIds` entry,
    lightest **in-person** patient load first — `patientLoad` sums each
@@ -118,7 +115,7 @@ Runs in this order for a given date:
    next desk is tried. A provider's rooms are never split across two desks
    in this pass — but see the fallback-fill pass below, which can still
    fill an unsplit remainder.
-6. **Two-room adjacency (fallback only, preferred — never a reason to leave
+5. **Two-room adjacency (fallback only, preferred — never a reason to leave
    a provider without a room)** — when the system has to pick a provider's
    second room itself (step 3 above; `secondPreferredRoomId`,
    `otherPreferredRoomCodes`, and `alternateRoomCodes` — steps 1, 2, 2b —
@@ -135,19 +132,19 @@ Runs in this order for a given date:
    Preferred Room dropdown by adjacency — it only excludes whichever room
    is already picked as Primary — since an explicitly configured Second
    Preferred Room is always honored as typed, adjacent or not.
-7. **Fallback fill** (last resort, once after every tier) — no working,
+6. **Fallback fill** (last resort, once after every tier) — no working,
    non-fixed provider is left missing a room while a genuinely open one
    exists anywhere. Searches every desk (home, then `alternateDeskIds` by
    patient load, then every other desk by patient load); if nothing's open,
    may evict an already-placed Nurse (never a Doctor/Fellow/Any-type
    provider or a reserved fixed-room provider), then makes one attempt (no
    further eviction) to relocate that nurse elsewhere.
-8. **Cross-check / backtracking** — the fallback-fill pass is re-run a few
+7. **Cross-check / backtracking** — the fallback-fill pass is re-run a few
    more times (bounded, stops once a round changes nothing), interleaved
    with step 9 below, against the true, current room state — a placement
    made late in one pass can open up a room an earlier-processed provider
    had already given up on.
-9. **Video-capable backtracking** (`tryImproveVideoCapableFit`) — unlike
+8. **Video-capable backtracking** (`tryImproveVideoCapableFit`) — unlike
    step 8, which only ever fills a fully-missing slot, this revisits a
    provider who already has a room but not a video-capable one when they
    needed it, and tries to **swap** them into a video-capable room held by
@@ -159,11 +156,11 @@ Runs in this order for a given date:
    is rolled back and the mismatch is left as a warning — the never-drop-a-
    provider guarantee always wins. This is the last step before results are
    considered ready to export.
-10. **Video-capable validation** — one final pass: if `dayEntries[].hasVideoVisit`
+9. **Video-capable validation** — one final pass: if `dayEntries[].hasVideoVisit`
     is true and the provider has no `hasOfficeOnFloor`, at least one
     assigned room should be video-capable; still unmet after step 9's
     backtracking → warning.
-11. **Effective rooms needed (2-rooms-down-to-1 reduction)** — a provider's
+10. **Effective rooms needed (2-rooms-down-to-1 reduction)** — a provider's
     `preferredNumberOfRooms` is their standing configuration, not
     necessarily how many rooms they actually need on a given day. Before
     placement, every entry gets a computed `effectiveRoomsNeeded`
@@ -187,7 +184,7 @@ Runs in this order for a given date:
     fixed-room provider whose day reduces to 1 room only has their primary
     room reserved; the second preferred room is simply never reserved in
     the first place, so it's automatically available to anyone else.
-12. **Room contention tie-break** — placement within one priority tier (#3)
+11. **Room contention tie-break** — placement within one priority tier (#3)
     at one desk is first-come, first-served: whoever is processed first
     simply claims a contested room first. Entries are sorted before
     placement so ties resolve sensibly instead of by arbitrary input order:
@@ -199,7 +196,7 @@ Runs in this order for a given date:
     preference, Other Set of Rooms, Alt desk rooms, adjacency, generic
     scoring) or, failing that, overflow (#5) to whichever alternate desk
     has the lowest in-person patient load.
-13. **Reshuffle any provider to complete a two-room adjacent pair** — the
+12. **Reshuffle any provider to complete a two-room adjacent pair** — the
     fallback pass's eviction logic previously only ever bumped an
     already-placed Nurse out of a room (see step 6's cross-check). Now,
     specifically when a provider still needs the SECOND room of an
@@ -214,7 +211,7 @@ Runs in this order for a given date:
     thing is rolled back and the slot is left exactly as it was — so
     nobody ends up without a room as a net result of this reshuffle.
     Pseudo (unmatched-name) entries are never evicted this way.
-14. **Final two-room adjacency validation/repair** — runs LAST, right
+13. **Final two-room adjacency validation/repair** — runs LAST, right
     before results are considered export-ready. Every provider who needs 2
     rooms and has both slots filled is double-checked for real adjacency
     (step 6), with exactly ONE exemption: a pair that is EXACTLY the
@@ -239,23 +236,23 @@ Runs in this order for a given date:
     the next. Whatever still can't be made adjacent after every attempt is
     left exactly as it was and flagged with a warning for manual review,
     rather than looping forever or dropping anyone's room.
-15. **Two in-person visits 2+ hours apart → one room** — a provider
+14. **Two in-person visits 2+ hours apart → one room** — a provider
     configured for 2 rooms with exactly two in-person visits all day
     (video/telephone ignored) whose start times are at least 2 hours apart
     gets one room, even if both visits are in the same half-day.
-16. **West desk** — in a desk named/identified "west", rooms whose code
+15. **West desk** — in a desk named/identified "west", rooms whose code
     starts with `6` can't be used by a Doctor or Fellow (any other type may).
-17. **Same hallway** — "adjacent" also requires the same `hall`; the second
+16. **Same hallway** — "adjacent" also requires the same `hall`; the second
     room is picked adjacent+same hall, else same hall, else any open room,
     and the final adjacency pass (step 14) repairs cross-hall pairs. An
     explicit Primary + Second Preferred pair is still honored as set.
-18. **Unmatched-name placeholders go last** — they're placed after Nurses,
+17. **Unmatched-name placeholders go last** — they're placed after Nurses,
     and a real provider still without a room takes a placeholder's room, so
     nobody real is "Not Found" while rooms are held by hidden placeholders.
-19. **Home desk first** — a desk's own Doctors/Fellows always get that desk's rooms before visitors from other desks: if a foreign provider holds a room while the home Doctor/Fellow has none, the visitor is moved elsewhere (Nurses are the ones relocated to other desks).
-20. **Never split across desks** — a provider who needs 2 rooms gets both on ONE desk. If only one room can be found, they keep it at their default desk (the other shows "Not Found") and any stray room on another desk is freed for a provider who has none.
-21. **Adjacent pair beats chosen rooms** — if a two-room provider's pair isn't adjacent and nothing is free, they swap rooms with whoever holds an adjacent room (as long as that person's own needs still hold in the room they receive).
-22. **Set Alt desk rooms are claimed** — a provider moved to another desk takes the rooms set for them there (an adjacent pair if they need two); a desk's own loosely-placed provider in those rooms is moved to other rooms (one or two over), keeping their own adjacency.
+18. **Home desk first** — a desk's own Doctors/Fellows always get that desk's rooms before visitors from other desks: if a foreign provider holds a room while the home Doctor/Fellow has none, the visitor is moved elsewhere (Nurses are the ones relocated to other desks).
+19. **Never split across desks** — a provider who needs 2 rooms gets both on ONE desk. If only one room can be found, they keep it at their default desk (the other shows "Not Found") and any stray room on another desk is freed for a provider who has none.
+20. **Adjacent pair beats chosen rooms** — if a two-room provider's pair isn't adjacent and nothing is free, they swap rooms with whoever holds an adjacent room (as long as that person's own needs still hold in the room they receive).
+21. **Set Alt desk rooms are claimed** — a provider moved to another desk takes the rooms set for them there (an adjacent pair if they need two); a desk's own loosely-placed provider in those rooms is moved to other rooms (one or two over), keeping their own adjacency.
 
 Other rules: only `kind: 'exam'` rooms are ever assignable (`office`/
 `utility` are floor-map-only, and never offered in the Providers form's
@@ -402,13 +399,6 @@ Name formatting in every exported page (`pdfGenerator.js`):
   assigned a room today" list, all of it. Every other type keeps printing
   its full name, unchanged.
 
-## Room Blocks — disabled, not deleted
-
-No UI tab; `App.jsx` always passes `roomBlocks: []`. Engine logic
-(`computeBlockedSlots`, `isBlocked`/`canFit`) and `RoomBlockManager.jsx`
-are intact. To re-enable: uncomment the import/tab/render branch in
-`App.jsx` and pass a real `roomBlocks` array.
-
 ## Firestore
 
 `App.jsx` currently uses local `useState` seeded from `src/data/seed.js`.
@@ -418,8 +408,6 @@ manager's `onChange` write to Firestore instead:
 - `desks` — `{ name }`
 - `rooms` — see Room fields above
 - `providers` — see Provider fields above
-- `roomBlocks` — `{ roomId, date, startMinutes, endMinutes, reason }`
-  (only needed once Room Blocks is re-enabled)
 
 `assignmentEngine.js`, `pdfParser.js`, `pdfGenerator.js` are pure
 functions of whatever data is passed in — no change needed there.

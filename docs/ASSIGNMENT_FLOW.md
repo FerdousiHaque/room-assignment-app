@@ -47,7 +47,6 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S0["computeBlockedSlots<br/>rooms blocked today"] --> S1
     S1["Per entry: computeEffectiveRoomsNeeded<br/>and needsVideoCapable"] --> S2
     S2{"Doctor/Fellow with office on floor<br/>and zero in-person visits?"} -- yes --> SKIP["no room needed:<br/>removed from results"]
     S2 -- no --> P0
@@ -113,8 +112,7 @@ FUNCTION computeEffectiveRoomsNeeded(provider, entry):        // assignmentEngin
     RETURN 2
 
 
-FUNCTION generateDailyAssignments(desks, rooms, providers, dayEntries, roomBlocks, date):
-    blocked = computeBlockedSlots(roomBlocks, date)
+FUNCTION generateDailyAssignments(desks, rooms, providers, dayEntries, date):
     FOR each working entry:
         needsVideoCapable    = hasVideoVisit AND NOT provider.hasOfficeOnFloor
         effectiveRoomsNeeded = computeEffectiveRoomsNeeded(provider, entry)
@@ -123,7 +121,7 @@ FUNCTION generateDailyAssignments(desks, rooms, providers, dayEntries, roomBlock
     // Phase 0
     FOR each fixed-room provider with patients today:
         reserve primary (and second, if effectiveRoomsNeeded == 2)
-        IF room is blocked, taken, or roomForbiddenFor(entry): slot = Not Found + warning
+        IF room is taken or roomForbiddenFor(entry): slot = Not Found + warning
 
     // Phases 1+2: priority tiers
     FOR tier IN [Doctor, Fellow, Any, Nurse, unmatched-name placeholders]:   // tierOf
@@ -183,7 +181,7 @@ FUNCTION fillMissingSlots(desk, entry, missingSlots, anchorRoomIdForSlot1):
        slot 1:  pickRoom(... adjacent to slot 0 AND same hallway)
                 ELSE pickRoom(... same hallway as slot 0)
                 ELSE pickRoom(... any open room)    // never leave Not Found if a room is open
-    // pickRoom always skips rooms that are blocked, taken, or roomForbiddenFor(entry)
+    // pickRoom always skips rooms that are taken or roomForbiddenFor(entry)
 
 FUNCTION roomForbiddenFor(entry, room):
     RETURN entry.type in [Doctor, Fellow] AND room is at a desk named/identified "west"

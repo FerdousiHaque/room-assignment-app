@@ -6,3 +6,5 @@ dist
 firebase-debug.log
 .DS_Store
 .env.local
+__pycache__/
+*.pyc

@@ -176,7 +176,7 @@ function linesToRecords(lines) {
  * @param {string} deskId  which desk this file's rows belong to
  * @returns {Promise<{ rows: Array, scheduleDate: string|null }>} rows like { deskId, time, provider, patient, ...anyOtherColumns }, plus the date printed on the schedule itself (ISO, or null if none was found on page 1)
  */
-export async function parseDeskScheduleFile(file, deskId) {
+async function parseDeskScheduleFile(file, deskId) {
   const { lines, scheduleDate } = await extractLines(file);
   const records = linesToRecords(lines);
   return { rows: records.map((r) => ({ deskId, ...r })), scheduleDate };

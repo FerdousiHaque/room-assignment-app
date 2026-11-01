@@ -71,57 +71,6 @@ describe('preferred number of rooms', () => {
   });
 });
 
-describe('room blocks', () => {
-  it('excludes a room from assignment during its blocked session', () => {
-    const rooms = [room('r1', 'a')];
-    const providers = [baseProvider()];
-    const dayEntries = [{ providerId: 'p1', isWorking: true, patientCount: 5, session: 'AM' }];
-    const roomBlocks = [{ id: 'b1', roomId: 'r1', date: '2026-09-08', startMinutes: null, endMinutes: null }];
-
-    const { assignments } = generateDailyAssignments({
-      desks, rooms, providers, dayEntries, roomBlocks, date: '2026-09-08'
-    });
-
-    expect(assignments[0].roomSlots[0].roomId).toBeNull();
-  });
-
-  it('does not block a date it does not apply to', () => {
-    const rooms = [room('r1', 'a')];
-    const providers = [baseProvider()];
-    const dayEntries = [{ providerId: 'p1', isWorking: true, patientCount: 5, session: 'AM' }];
-    const roomBlocks = [{ id: 'b1', roomId: 'r1', date: '2026-09-09', startMinutes: null, endMinutes: null }];
-
-    const { assignments } = generateDailyAssignments({
-      desks, rooms, providers, dayEntries, roomBlocks, date: '2026-09-08'
-    });
-
-    expect(assignments[0].roomSlots[0].roomId).toBe('r1');
-  });
-
-  it('only blocks the overlapping half-day, leaving the other session free for sharing', () => {
-    const rooms = [room('r1', 'a')];
-    const providers = [
-      baseProvider({ id: 'p1' }),
-      baseProvider({ id: 'p2' })
-    ];
-    // Block covers 10am-12pm -> AM only.
-    const roomBlocks = [{ id: 'b1', roomId: 'r1', date: '2026-09-08', startMinutes: 10 * 60, endMinutes: 12 * 60 }];
-    const dayEntries = [
-      { providerId: 'p1', isWorking: true, patientCount: 5, session: 'AM' },
-      { providerId: 'p2', isWorking: true, patientCount: 5, session: 'PM' }
-    ];
-
-    const { assignments } = generateDailyAssignments({
-      desks, rooms, providers, dayEntries, roomBlocks, date: '2026-09-08'
-    });
-
-    const amAssignment = assignments.find((a) => a.session === 'AM');
-    const pmAssignment = assignments.find((a) => a.session === 'PM');
-    expect(amAssignment.roomSlots[0].roomId).toBeNull(); // AM blocked
-    expect(pmAssignment.roomSlots[0].roomId).toBe('r1'); // PM still open
-  });
-});
-
 describe('video-capable requirement', () => {
   // Note: whether a video-capable room is needed is decided ENTIRELY by
   // that day's imported schedule (dayEntries[].hasVideoVisit) crossed with

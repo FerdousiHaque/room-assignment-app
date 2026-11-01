@@ -17,7 +17,7 @@
  *   appState/day-<YYYY-MM-DD>  { rowsByDesk: { [deskId]: Row[] } }  -- one per day, so old days don't linger
  * ------------------------------------------------------------------
  */
-import { doc, onSnapshot, setDoc, getDoc, deleteDoc } from 'firebase/firestore';
+import { doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase.js';
 
 /**
@@ -114,12 +114,6 @@ export function subscribeDayRows(date, callback) {
 
 export async function saveDayRows(date, rowsByDesk) {
   await setDoc(doc(db, 'appState', dayDocId(date)), { rowsByDesk: stripUndefined(rowsByDesk) });
-}
-
-/** One-off read, used only if a caller needs the current value without subscribing. */
-export async function getDayRows(date) {
-  const snap = await getDoc(doc(db, 'appState', dayDocId(date)));
-  return snap.exists() ? snap.data().rowsByDesk || {} : {};
 }
 
 /**

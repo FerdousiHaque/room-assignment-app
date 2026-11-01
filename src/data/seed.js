@@ -164,23 +164,3 @@ export const providers = [
     hasOfficeOnFloor: false
   }
 ];
-
-// One day's worth of who's working, how many patients, which half of the
-// day (AM/PM/FULL), and whether that day includes a video visit — this is
-// ALWAYS per-day, never a static provider field (see ProviderManager.jsx's
-// comment on why "has video visit" isn't there). Normally this comes from
-// the uploaded PDFs via pdfParser.deriveDayEntries; this is just for local
-// dev/testing.
-export const sampleDayEntries = [
-  { providerId: 'p1', isWorking: true, patientCount: 8, session: 'AM' },
-  { providerId: 'p2', isWorking: true, patientCount: 20, session: 'FULL', hasVideoVisit: true },
-  { providerId: 'p3', isWorking: true, patientCount: 6, session: 'PM' },
-  { providerId: 'p4', isWorking: false, patientCount: 0, session: 'FULL' }
-];
-
-// Example room blocks — for the (currently disabled) room-blocking feature.
-// Not loaded into the app; kept for when that feature is re-enabled.
-export const sampleRoomBlocks = [
-  { id: 'block-1', roomId: '22E', date: null, startMinutes: 10 * 60, endMinutes: 12 * 60, reason: 'Maintenance' },
-  { id: 'block-2', roomId: '64E', date: '2026-09-10', startMinutes: null, endMinutes: null, reason: 'Deep clean' }
-];

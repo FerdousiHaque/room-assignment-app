@@ -21,13 +21,6 @@ import {
   deleteDayRows
 } from './data/firestoreSync.js';
 
-// Room blocking is disabled for now (per request), but NOT deleted — the
-// component, the engine's block-checking logic, and RoomBlockManager.jsx
-// all still exist. To bring it back: uncomment this import, the 'blocks'
-// tab button below, the tab's render branch, and pass a real editable
-// roomBlocks array (instead of the hardcoded []) into generateDailyAssignments.
-// import RoomBlockManager from './components/RoomBlockManager.jsx';
-
 // Providers, rooms, and each day's uploaded schedule rows are backed by
 // Firestore (src/data/firestoreSync.js) — every browser looking at this
 // app sees the same live data. On first load ever, Firestore is seeded
@@ -164,10 +157,7 @@ function MainApp({ role, onLogout }) {
   // simply left unused here rather than pulled into a variable.
   const { assignments, warnings: engineWarnings } = useMemo(() => {
     if (!dayEntries) return { assignments: [], warnings: [], logs: [] };
-    // roomBlocks is hardcoded to [] while the room-blocking feature is
-    // disabled (see the commented-out import above) — the engine still
-    // accepts and checks a roomBlocks array, it's just never populated.
-    return generateDailyAssignments({ desks, rooms, providers: effectiveProviders, dayEntries, roomBlocks: [], date });
+    return generateDailyAssignments({ desks, rooms, providers: effectiveProviders, dayEntries, date });
   }, [dayEntries, effectiveProviders, rooms, date]);
 
   const warnings = useMemo(() => {
@@ -216,7 +206,6 @@ function MainApp({ role, onLogout }) {
       rooms: deskOnlyRooms,
       providers: [...providers, ...pseudoProviders],
       dayEntries: [...matchedEntries, ...pseudoDayEntries],
-      roomBlocks: [],
       date
     });
     return {
@@ -273,7 +262,6 @@ function MainApp({ role, onLogout }) {
       rooms,
       providers: [...providers, ...pseudoProviders],
       dayEntries: [...matchedEntries, ...pseudoDayEntries],
-      roomBlocks: [],
       date
     });
     const realAll = allAssignments.filter((a) => !a.providerId.startsWith('unmatched-'));
@@ -311,7 +299,6 @@ function MainApp({ role, onLogout }) {
           <button className={tab === 'assign' ? 'active' : ''} onClick={() => setTab('assign')}>Assign rooms</button>
           <button className={tab === 'providers' ? 'active' : ''} onClick={() => setTab('providers')}>Providers</button>
           <button className={tab === 'rooms' ? 'active' : ''} onClick={() => setTab('rooms')}>Rooms</button>
-          {/* Room blocks tab intentionally removed — see the commented-out import above. */}
         </nav>
       </header>
 
@@ -322,10 +309,6 @@ function MainApp({ role, onLogout }) {
       {tab === 'rooms' && (
         <RoomManager rooms={rooms} desks={desks} onChange={setRooms} readOnly={!isAdmin} />
       )}
-
-      {/* {tab === 'blocks' && (
-        <RoomBlockManager roomBlocks={roomBlocks} rooms={rooms} desks={desks} onChange={setRoomBlocks} />
-      )} */}
 
       {tab === 'assign' && (
         <>
